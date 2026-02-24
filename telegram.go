@@ -95,7 +95,7 @@ func (b *TelegramBot) Start() error {
 			return b.handleVoice(m)
 		}
 		return b.handlePhoto(m)
-	})
+	}, telegram.IsMedia)
 
 	b.client.Idle()
 	return nil
@@ -238,6 +238,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 		_, _ = m.Reply("⚠️ Failed to download voice message.")
 		return nil
 	}
+	defer os.Remove(audioPath)
 
 	transcribed, err := transcribeAudio(audioPath)
 	if err != nil {
@@ -311,6 +312,7 @@ func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
 		_, _ = m.Reply("⚠️ Failed to download your photo.")
 		return nil
 	}
+	defer os.Remove(photoLocation)
 
 	caption := m.Text()
 	if caption == "" {
