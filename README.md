@@ -24,25 +24,25 @@ it comes loaded with over 85 little tools to help out every day 🎀
 ### 🎀 all features & tools
 apexclaw has a massive collection of 85+ built-in tools. here is everything it can do for you right now:
 
-**💻 system & files**
+**• system & files**
 running custom shell/python scripts, reading/writing files, creating/listing folders, fetching system info, managing processes, tracking system clipboard
 
-**🌐 web & discovery**
+**• web & discovery**
 fetching web pages, deep web searching, fully interacting with headless chrome (clicking, typing, screenshots, evaluating javascript), reading wikipedia, searching github repos, live news headlines, real-time reddit feeds, youtube search, and pulling pinterest boards
 
-**✉️ chatting & mail**
+**• chatting & mail**
 reading incoming gmail, sending outbound email, sending and downloading telegram files, forwarding/pinning/deleting telegram messages, automatically updating its own profile picture, pulling group info, and deep-reading replies
 
-**📆 tracking & life**
+**• tracking & life**
 saving and recalling persistent facts, managing dynamic notes, running complex crontab scheduled tasks, creating one-off timers, building a complete to-do system, managing pomodoro study sessions, and setting up daily digests
 
-**🌍 world utility**
+**• world utility**
 live global flight tracking, airport info lookup, exact geocoding and live route planning, real-world sun shading calculation for drives, live weather mapping, real-time stock prices, translating languages, doing currency and timezone conversions, checking hex/rgb colors
 
-**⚙️ misc & tools**
+**• misc & tools**
 evaluating complex math, regex pattern matching, generating strong hash strings, base64 encoding/decoding, checking dns/ip data, grabbing raw http resources, pulling rss feeds, and sending voice notes via text-to-speech
 
-### �🍼 quick start
+### 🚀 quick start
 getting your own apexclaw is super simple!
 
 1. stuff you need: `go 1.22+`, `ffmpeg` (for voice notes), and your telegram api keys.
