@@ -1,75 +1,95 @@
-# ApexClaw
+# 🐾 apexclaw
 
-ApexClaw is a soft but powerful AI companion that lives inside your Telegram. Using the Z.AI engine, it thinks, acts, and manages your digital life with total autonomy. It is designed to be your friendly command center, taking care of the heavy lifting so you can focus on being you.
+<p align="center">
+  <img src="https://img.shields.io/github/stars/amarnathcjd/apexclaw?style=flat-square&color=pink" alt="stars">
+  <img src="https://img.shields.io/github/forks/amarnathcjd/apexclaw?style=flat-square&color=purple" alt="forks">
+  <img src="https://img.shields.io/github/downloads/amarnathcjd/apexclaw/total?style=flat-square&color=cyan" alt="downloads">
+</p>
 
-> **Current State:** v0.1 | **Tool Count:** 85 Functional Tools | **Language:** Go
+hi there! welcome to apexclaw 🌸 it's a soft but super capable ai companion that lives right inside your telegram. 
+inspired by openclaw, it uses the z.ai engine to think, act, and make your digital life so much easier ✨
 
-### Key Capabilities
+### 🎈 why you'll love it
+instead of just an ai that talks, think of apexclaw as a tiny friend who actually does chores for you! you can:
+- 🖼️ send it a photo and ask what's in it
+- 🎙️ reply with a voice note and it will transcribe and do what you say (using free google voice-to-text!)
+- 🗣️ have it talk back to you with text-to-speech
+- 🌐 ask it to browse the web, click links, and read articles using a real headless browser
+- 📧 tell it to read your latest gmail emails or send one to a friend
+- 📝 ask it to remember your favorite coffee order for next time
+- 🛠️ make it run python scripts, check flights, grab weather, convert timezones, track stocks, and way more!
 
-**Vision and Voice**
-*   **Visual Intelligence.** Send a photo and ApexClaw will instantly tell you what is happening in the image.
-*   **Natural Voice Messages.** Talk to ApexClaw in DMs or groups (just reply to the bot!). It transcribes your voice via a free Google pipeline and acts on your commands immediately.
-*   **Speech Output.** ApexClaw can speak back to you using high-quality synthesized voices for a truly hands-free experience.
+it comes loaded with over 85 little tools to help out every day 🎀
 
-**Web and Browser Control**
-*   **Chrome Engine Native.** ApexClaw uses a real browser to click buttons, type text, and navigate sites precisely.
-*   **Content Discovery.** Integrated support for YouTube, Reddit, Pinterest, Wikipedia, and Google News.
-*   **Advanced Research.** Browses the web using DuckDuckGo and GitHub to find specific code or information for you.
+### 🎀 all features & tools
+apexclaw has a massive collection of 85+ built-in tools. here is everything it can do for you right now:
 
-**Communication and Productivity**
-*   **Complete Email Control.** Manage your Gmail or any IMAP/SMTP inbox. ApexClaw can read your mail, summarize threads, and send replies.
-*   **Telegram Superpowers.** It can pin messages, manage group members, react to posts, and download media to its own local storage.
-*   **Memory and To-Dos.** It builds a persistent knowledge base of your facts and manages a full-featured To-Do system.
+**💻 system & files**
+running custom shell/python scripts, reading/writing files, creating/listing folders, fetching system info, managing processes, tracking system clipboard
 
----
+**🌐 web & discovery**
+fetching web pages, deep web searching, fully interacting with headless chrome (clicking, typing, screenshots, evaluating javascript), reading wikipedia, searching github repos, live news headlines, real-time reddit feeds, youtube search, and pulling pinterest boards
 
-### Expanding the Toolkit
+**✉️ chatting & mail**
+reading incoming gmail, sending outbound email, sending and downloading telegram files, forwarding/pinning/deleting telegram messages, automatically updating its own profile picture, pulling group info, and deep-reading replies
 
-One of the best things about ApexClaw is how friendly it is to developers. Adding a new tool is as simple as creating a small Go struct. You don't need to worry about complex API wiring—just define what your tool needs and what it does.
+**📆 tracking & life**
+saving and recalling persistent facts, managing dynamic notes, running complex crontab scheduled tasks, creating one-off timers, building a complete to-do system, managing pomodoro study sessions, and setting up daily digests
 
-If you have an idea for a tool that helps with your workflow, you can drop it in and ApexClaw will start using it immediately to solve problems.
+**🌍 world utility**
+live global flight tracking, airport info lookup, exact geocoding and live route planning, real-world sun shading calculation for drives, live weather mapping, real-time stock prices, translating languages, doing currency and timezone conversions, checking hex/rgb colors
 
----
+**⚙️ misc & tools**
+evaluating complex math, regex pattern matching, generating strong hash strings, base64 encoding/decoding, checking dns/ip data, grabbing raw http resources, pulling rss feeds, and sending voice notes via text-to-speech
 
-### The Roadmap
+### �🍼 quick start
+getting your own apexclaw is super simple!
 
-Here is what is planned for the future of ApexClaw:
-
-- [ ] **Web Dashboard.** A beautiful browser interface to configure your bot, view logs, and manage tools visually.
-- [ ] **More LLM Providers.** Expansion to support local models and other major AI providers.
-- [ ] **Vector Memory.** Advanced long-term memory using vector embeddings for even better fact retrieval.
-- [ ] **Plugin System.** A community-driven way to share and install new tools instantly.
-- [ ] **Voice-to-Voice.** Real-time audio conversations without needing to click "Send."
-
----
-
-### Quick Start
-
-**Required Ingredients**
-*   Go 1.22+ installed on your machine.
-*   ffmpeg on your system path (needed for voice processing).
-*   Telegram API ID and Hash from my.telegram.org.
-*   Telegram Bot Token from @BotFather.
-
-**Setup**
-Create a `.env` file with your details:
+1. stuff you need: `go 1.22+`, `ffmpeg` (for voice notes), and your telegram api keys.
+2. set up your `.env` file like this:
 ```ini
-TELEGRAM_BOT_TOKEN="your_token"
+TELEGRAM_BOT_TOKEN="your_bot_token"
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH="your_hash"
-OWNER_ID=your_telegram_id
+OWNER_ID=your_id # so it only listens to you!
 
-# Optional Token
+# optional if you have a token
 ZAI_TOKEN="your_token"
 ```
 
-**Running**
+3. fire it up!
 ```bash
 go run .
 ```
 
----
+### 💌 setup: gmail integration
+apexclaw can read and send emails right from your chat! since normal passwords don't work for bots, you just need a special google "app password".
 
-### License
+1. go to your google account settings ➔ security.
+2. make sure **2-step verification** is turned on.
+3. search for "app passwords".
+4. create a new one, name it "apexclaw", and copy the 16-letter password it gives you!
+5. add these lines to your `.env` file:
+```ini
+EMAIL_ADDRESS="your.email@gmail.com"
+EMAIL_PASSWORD="your-new-16-letter-password"
 
-ApexClaw is released under the **MIT License**. You are free to use, modify, and distribute it however you like.
+EMAIL_IMAP_HOST="imap.gmail.com"
+EMAIL_IMAP_PORT="993"
+
+EMAIL_SMTP_HOST="smtp.gmail.com"
+EMAIL_SMTP_PORT="587"
+```
+restart the bot and ask it to *"read my last 3 emails!"* ✨
+
+### 🧩 making it yours
+want it to do something new? adding tools is so easy. just write a tiny go struct and drop it in! apexclaw will figure out how to use it instantly. 
+
+### 🌱 what we're planning
+- [ ] a pretty web dashboard for settings 
+- [ ] connect other ai models 
+- [ ] deep vector memory so it remembers everything 
+- [ ] an easy plugin system for tools!
+
+### 📜 license
+all yours to play with under the mit license 💖
