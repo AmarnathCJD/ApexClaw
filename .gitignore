@@ -1,0 +1,10 @@
+bakup
+*.exe
+.env
+*.db
+*.dat
+*.txt
+*.jpg
+*.webp
+codey.md
+*.json
