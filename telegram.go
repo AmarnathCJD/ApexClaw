@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,7 +220,13 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 		return nil
 	}
 	if !m.IsPrivate() {
-		return nil
+		if !m.IsReply() {
+			return nil
+		}
+		r, err := m.GetReplyMessage()
+		if err != nil || r.SenderID() != b.client.Me().ID {
+			return nil
+		}
 	}
 
 	log.Printf("[TG] voice from %s (chat %d)", userID, m.ChatID())
@@ -375,92 +382,58 @@ func (b *TelegramBot) sendTyping(m *telegram.NewMessage) {
 }
 
 func transcribeAudio(filePath string) (string, error) {
-	apiKey := os.Getenv("ASSEMBLYAI_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("ASSEMBLYAI_API_KEY not set — set it to enable voice transcription")
-	}
+	flacPath := filePath + ".flac"
 
-	f, err := os.Open(filePath)
+	cmd := exec.Command("ffmpeg", "-y", "-i", filePath, "-ar", "16000", "-ac", "1", "-c:a", "flac", flacPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("ffmpeg conversion failed: %v\nOutput: %s", err, string(out))
+	}
+	defer os.Remove(flacPath)
+
+	flacBytes, err := os.ReadFile(flacPath)
 	if err != nil {
-		return "", fmt.Errorf("open audio: %w", err)
+		return "", fmt.Errorf("failed to read flac file: %w", err)
 	}
-	defer f.Close()
 
-	uploadReq, err := http.NewRequest("POST", "https://api.assemblyai.com/v2/upload", f)
+	url := "https://www.google.com/speech-api/v2/recognize?client=chromium&lang=en-US&key=AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(flacBytes))
 	if err != nil {
 		return "", err
 	}
-	uploadReq.Header.Set("authorization", apiKey)
-	uploadReq.Header.Set("content-type", "application/octet-stream")
+	req.Header.Set("Content-Type", "audio/x-flac; rate=16000")
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	uploadResp, err := client.Do(uploadReq)
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("upload: %w", err)
+		return "", fmt.Errorf("google stt request: %w", err)
 	}
-	defer uploadResp.Body.Close()
-	uploadBody, _ := io.ReadAll(uploadResp.Body)
+	defer resp.Body.Close()
 
-	var uploadResult struct {
-		UploadURL string `json:"upload_url"`
-	}
-	if err := json.Unmarshal(uploadBody, &uploadResult); err != nil || uploadResult.UploadURL == "" {
-		return "", fmt.Errorf("upload response parse error: %s", string(uploadBody))
-	}
-
-	transcriptReqBody, _ := json.Marshal(map[string]string{
-		"audio_url":     uploadResult.UploadURL,
-		"language_code": "en",
-	})
-	tReq, err := http.NewRequest("POST", "https://api.assemblyai.com/v2/transcript", bytes.NewReader(transcriptReqBody))
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	tReq.Header.Set("authorization", apiKey)
-	tReq.Header.Set("content-type", "application/json")
 
-	tResp, err := client.Do(tReq)
-	if err != nil {
-		return "", fmt.Errorf("transcript request: %w", err)
-	}
-	defer tResp.Body.Close()
-	tBody, _ := io.ReadAll(tResp.Body)
-
-	var tResult struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(tBody, &tResult); err != nil || tResult.ID == "" {
-		return "", fmt.Errorf("transcript ID parse error: %s", string(tBody))
-	}
-
-	pollURL := "https://api.assemblyai.com/v2/transcript/" + tResult.ID
-	for i := 0; i < 20; i++ {
-		time.Sleep(3 * time.Second)
-		pReq, _ := http.NewRequest("GET", pollURL, nil)
-		pReq.Header.Set("authorization", apiKey)
-		pResp, err := client.Do(pReq)
-		if err != nil {
+	lines := strings.Split(string(bodyBytes), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		pBody, _ := io.ReadAll(pResp.Body)
-		pResp.Body.Close()
-
-		var poll struct {
-			Status string `json:"status"`
-			Text   string `json:"text"`
-			Error  string `json:"error"`
+		var result struct {
+			Result []struct {
+				Alternative []struct {
+					Transcript string `json:"transcript"`
+				} `json:"alternative"`
+			} `json:"result"`
 		}
-		if err := json.Unmarshal(pBody, &poll); err != nil {
-			continue
-		}
-		switch poll.Status {
-		case "completed":
-			return poll.Text, nil
-		case "error":
-			return "", fmt.Errorf("transcription failed: %s", poll.Error)
+		if err := json.Unmarshal([]byte(line), &result); err == nil {
+			if len(result.Result) > 0 && len(result.Result[0].Alternative) > 0 {
+				return result.Result[0].Alternative[0].Transcript, nil
+			}
 		}
 	}
-	return "", fmt.Errorf("transcription timed out")
+
+	return "", fmt.Errorf("no transcript found in response: %s", string(bodyBytes))
 }
 
 func truncate(s string, n int) string {
