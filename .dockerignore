@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+apexclaw
+apexclaw.exe
+apexclaw-*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node/npm (if any)
+node_modules
+package-lock.json
+yarn.lock
+
+# Test coverage
+coverage
+*.out
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Runtime
+tmp
+temp
+*.pid
+
+# Documentation
+docs
+README.md
