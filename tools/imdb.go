@@ -281,3 +281,9 @@ func getObjValue(obj map[string]any, key string) string {
 	}
 	return ""
 }
+
+func jsonError(msg string) string {
+	e := map[string]string{"error": msg}
+	b, _ := json.Marshal(e)
+	return string(b)
+}

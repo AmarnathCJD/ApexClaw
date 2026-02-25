@@ -136,6 +136,4 @@ var All = []*ToolDef{
 	ReadDocument,
 	ListDocuments,
 	SummarizeDocument,
-
-	InstagramToTG,
 }
