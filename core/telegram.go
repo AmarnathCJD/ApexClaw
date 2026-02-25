@@ -416,8 +416,8 @@ func transcribeAudio(filePath string) (string, error) {
 		return "", err
 	}
 
-	lines := strings.Split(string(bodyBytes), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(string(bodyBytes), "\n")
+	for line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
