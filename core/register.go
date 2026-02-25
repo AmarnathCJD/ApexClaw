@@ -49,6 +49,7 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.SetBotDpFn = TGSetBotDp
 	tools.TGReactFn = TGReact
 	tools.TGGetReplyFn = TGGetReply
+	tools.SendTGMessageWithButtonsFn = TGSendMessageWithButtons
 }
 
 func bridgeArgs(args []tools.ToolArg) []ToolArg {
