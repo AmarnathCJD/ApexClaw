@@ -190,8 +190,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 
-	const maxIter = 8
-	for i := range maxIter {
+	for i := range Cfg.MaxIterations {
 		reply, err := s.client.Send(ctx, s.model, s.history)
 		if err != nil {
 			if err == context.DeadlineExceeded {
@@ -211,10 +210,11 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 		result := s.executeTool(funcName, argsJSON, senderID)
 		log.Printf("[AGENT] tool=%s result_len=%d", funcName, len(result))
-		s.history = append(s.history, model.Message{
-			Role:    "user",
-			Content: fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result),
-		})
+		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
+		if isToolError(result) {
+			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+		}
+		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 
 		if t, ok := s.registry.Get(funcName); ok && t.BlocksContext {
 			if ctx.Err() != nil {
@@ -243,8 +243,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 	s.mu.Unlock()
 
-	const maxIter = 8
-	for i := range maxIter {
+	for i := range Cfg.MaxIterations {
 		s.mu.Lock()
 		history := make([]model.Message, len(s.history))
 		copy(history, s.history)
@@ -281,11 +280,12 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		s.mu.Unlock()
 
 		result := s.executeTool(funcName, argsJSON, senderID)
+		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
+		if isToolError(result) {
+			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+		}
 		s.mu.Lock()
-		s.history = append(s.history, model.Message{
-			Role:    "user",
-			Content: fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result),
-		})
+		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 		s.mu.Unlock()
 
 		if t, ok := s.registry.Get(funcName); ok && t.BlocksContext {
@@ -338,8 +338,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 	})
 	s.mu.Unlock()
 
-	const maxContinue = 7
-	for range maxContinue {
+	for range Cfg.MaxIterations {
 		s.mu.Lock()
 		history := make([]model.Message, len(s.history))
 		copy(history, s.history)
@@ -364,10 +363,11 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "assistant", Content: r})
 		res := s.executeTool(fn, aj, senderID)
-		s.history = append(s.history, model.Message{
-			Role:    "user",
-			Content: fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res),
-		})
+		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res)
+		if isToolError(res) {
+			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", fn, res)
+		}
+		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 		s.mu.Unlock()
 	}
 	return "Max iterations reached.", nil
@@ -409,6 +409,13 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 		return t.ExecuteWithContext(args, senderID)
 	}
 	return t.Execute(args)
+}
+
+func isToolError(result string) bool {
+	r := strings.TrimSpace(result)
+	return strings.HasPrefix(r, "Error:") ||
+		strings.HasPrefix(r, "{\"error\"") ||
+		strings.Contains(r, "unknown tool")
 }
 
 func cleanReply(s string) string {

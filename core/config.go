@@ -17,6 +17,7 @@ type Config struct {
 	TelegramAPIHash  string
 	TelegramBotToken string
 	OwnerID          string
+	MaxIterations    int
 }
 
 var Cfg = Config{
@@ -25,6 +26,7 @@ var Cfg = Config{
 	TelegramBotToken: "",
 	DefaultModel:     "GLM-4.7",
 	OwnerID:          "",
+	MaxIterations:    10,
 }
 
 func init() {
@@ -61,4 +63,10 @@ func init() {
 	Cfg.TelegramAPIHash = os.Getenv("TELEGRAM_API_HASH")
 	Cfg.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	Cfg.OwnerID = os.Getenv("OWNER_ID")
+
+	if maxIter := os.Getenv("MAX_ITERATIONS"); maxIter != "" {
+		if n, err := strconv.Atoi(maxIter); err == nil && n > 0 {
+			Cfg.MaxIterations = n
+		}
+	}
 }
