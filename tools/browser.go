@@ -215,6 +215,7 @@ var BrowserScreenshot = &ToolDef{
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "path", Description: "File path to save the screenshot (e.g. '/tmp/screen.png'). Defaults to a temp file.", Required: false},
+		{Name: "full_page", Description: "Capture full page (true) or viewport (false). Default: false", Required: false},
 	},
 	Execute: func(args map[string]string) string {
 		savePath := args["path"]
@@ -226,20 +227,39 @@ var BrowserScreenshot = &ToolDef{
 			f.Close()
 			savePath = f.Name()
 		}
+
+		fullPage := strings.ToLower(strings.TrimSpace(args["full_page"])) == "true"
+
 		ctx, err := getCDPCtx()
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)
 		}
+
 		tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		tabCtx, tabCancel := chromedp.NewContext(tctx)
-		defer tabCancel()
+
+		// Use the main browser context, not a new tab context
 		var buf []byte
-		if err := chromedp.Run(tabCtx,
-			chromedp.FullScreenshot(&buf, 90),
-		); err != nil {
-			return fmt.Sprintf("Error taking screenshot: %v", err)
+		if fullPage {
+			// Full page screenshot
+			if err := chromedp.Run(tctx,
+				chromedp.FullScreenshot(&buf, 90),
+			); err != nil {
+				return fmt.Sprintf("Error taking full screenshot: %v", err)
+			}
+		} else {
+			// Viewport screenshot
+			if err := chromedp.Run(tctx,
+				chromedp.CaptureScreenshot(&buf),
+			); err != nil {
+				return fmt.Sprintf("Error taking screenshot: %v", err)
+			}
 		}
+
+		if len(buf) == 0 {
+			return "Error: screenshot resulted in empty image. Browser window may not be visible or page may not be loaded."
+		}
+
 		if err := os.WriteFile(savePath, buf, 0644); err != nil {
 			return fmt.Sprintf("Error saving screenshot: %v", err)
 		}

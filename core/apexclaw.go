@@ -126,7 +126,15 @@ func buildSystemPrompt(reg *ToolRegistry) string {
 			"NEVER use markdown: no backticks (`), no asterisks (*), no underscores (_), no # headers, no ``` code blocks.\n" +
 			"Allowed HTML tags ONLY: <b>, <i>, <u>, <s>, <a href=\"\">, <br>, <pre>, <code>, <blockquote>, <spoiler>\n" +
 			"For code, use: <pre language=\"language_code_here\">your code here</pre>\n" +
-			"For inline code, use: <code>snippet</code> — never backticks.\n\n",
+			"For inline code, use: <code>snippet</code> — never backticks.\n\n" +
+
+			"## Telegram Buttons (CRITICAL)\n" +
+			"When user asks to send buttons with tg_send_message_buttons:\n" +
+			"The 'buttons' parameter MUST be base64-encoded JSON. Build JSON like this:\n" +
+			"{\"rows\":[{\"buttons\":[{\"text\":\"ButtonText\",\"type\":\"data\",\"data\":\"callback_data\",\"style\":\"success\"}]}]}\n" +
+			"Then base64 encode it BEFORE passing to the tool.\n" +
+			"Styles: success=green, danger=red, primary=blue. Type: data=callback, url=link.\n" +
+			"Example base64 for green button: eyJyb3dzIjpbeyJidXR0b25zIjpbeyJ0ZXh0IjoiR3JlZW4iLCJ0eXBlIjoiZGF0YSIsImRhdGEiOiJjbGljayIsInN0eWxlIjoic3VjY2VzcyJ9XX1dfQ==\n\n",
 	)
 
 	tools := reg.List()
