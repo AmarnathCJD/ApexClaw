@@ -469,7 +469,6 @@ var PatBinCreate = &ToolDef{
 		{Name: "language", Description: "Language for syntax highlighting (go, py, js, java, cpp, rust, sh, sql, json, xml, etc)", Required: false},
 		{Name: "expires_in", Description: "Expiration time: 1h, 1d, 1w, 1m (leave empty for no expiration)", Required: false},
 		{Name: "burn_after_read", Description: "Delete after first view: true or false (default false)", Required: false},
-		{Name: "is_public", Description: "Make paste public: true or false (default true)", Required: false},
 	},
 	Execute: func(args map[string]string) string {
 		content := strings.TrimSpace(args["content"])
@@ -480,9 +479,7 @@ var PatBinCreate = &ToolDef{
 		language := strings.TrimSpace(args["language"])
 		expiresIn := strings.TrimSpace(args["expires_in"])
 		burnAfterRead := strings.TrimSpace(args["burn_after_read"]) == "true"
-		isPublic := strings.TrimSpace(args["is_public"]) != "false" // default true
-
-		paste, err := pbCreatePaste(content, language, expiresIn, burnAfterRead, isPublic)
+		paste, err := pbCreatePaste(content, language, expiresIn, burnAfterRead)
 		if err != nil {
 			return pbJsonError(fmt.Sprintf("create failed: %v", err))
 		}
@@ -523,49 +520,55 @@ var PatBinGet = &ToolDef{
 	},
 }
 
-func pbCreatePaste(content, language, expiresIn string, burnAfterRead, isPublic bool) (*PatBinPaste, error) {
-	payload := map[string]any{
-		"content":         content,
-		"is_public":       isPublic,
-		"burn_after_read": burnAfterRead,
+func pbCreatePaste(content, language, expiresIn string, burnAfterRead bool) (*PatBinPaste, error) {
+	payload := fmt.Sprintf(`{"content":%q,"title":"","language":"%s","is_public":true}`, content, language)
+
+	req, err := http.NewRequest("POST", "https://patbin.fun/api/paste", bytes.NewBufferString(payload))
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
-	if language != "" {
-		payload["language"] = language
-	}
-	if expiresIn != "" {
-		payload["expires_in"] = expiresIn
-	}
-
-	jsonData, _ := json.Marshal(payload)
-
-	apiURL := "http://localhost:8080/api/paste"
-	req, _ := http.NewRequest("POST", apiURL, bytes.NewReader(jsonData))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Apexclaw")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var paste PatBinPaste
-	if err := json.NewDecoder(resp.Body).Decode(&paste); err != nil {
-		return nil, fmt.Errorf("decode failed: %w", err)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
 	}
 
-	return &paste, nil
+	// Parse the ID from JSON response {"id":"xxx",...}
+	idStart := bytes.Index(body, []byte(`"id":"`))
+	if idStart == -1 {
+		return nil, fmt.Errorf("id not found in response")
+	}
+	idStart += 6
+	idEnd := bytes.Index(body[idStart:], []byte(`"`))
+	if idEnd == -1 {
+		return nil, fmt.Errorf("id end not found in response")
+	}
+
+	pasteID := string(body[idStart : idStart+idEnd])
+	paste := &PatBinPaste{
+		ID:       pasteID,
+		Content:  content,
+		Language: language,
+		IsPublic: true,
+	}
+	return paste, nil
 }
 
 func pbGetPaste(pasteID string) (*PatBinPaste, error) {
-	apiURL := fmt.Sprintf("http://localhost:8080/api/paste/%s", pasteID)
+	apiURL := fmt.Sprintf("http://patbin.fun/api/paste/%s", pasteID)
 	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("User-Agent", "Apexclaw")
 

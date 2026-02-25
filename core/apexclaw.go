@@ -149,14 +149,19 @@ func buildSystemPrompt(reg *ToolRegistry) string {
 	if len(tools) > 0 {
 		sb.WriteString("## Tools\n")
 		for _, t := range tools {
-			sb.WriteString(fmt.Sprintf("• %s: %s\n", t.Name, t.Description))
+			var args []string
 			for _, a := range t.Args {
-				req := ""
+				arg := a.Name
 				if a.Required {
-					req = "*"
+					arg += "*"
 				}
-				sb.WriteString(fmt.Sprintf("    %s%s: %s\n", a.Name, req, a.Description))
+				args = append(args, arg)
 			}
+			argStr := ""
+			if len(args) > 0 {
+				argStr = " [" + strings.Join(args, "|") + "]"
+			}
+			sb.WriteString(fmt.Sprintf("• %s%s: %s\n", t.Name, argStr, t.Description))
 		}
 		sb.WriteString("\nExample: <tool_call>exec cmd=\"echo hello\" /></tool_call>\n")
 	}
