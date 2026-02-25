@@ -192,25 +192,37 @@ It comes loaded with **94 tools** ready to use.
 
 ### Quick start
 
-1. You need: `go 1.22+`, `ffmpeg` (for voice), your Telegram API keys
-2. Set up your `.env`:
-
-```ini
-TELEGRAM_BOT_TOKEN="your_bot_token"
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH="your_hash"
-OWNER_ID=your_telegram_id
-
-# Optional
-ZAI_TOKEN="your_token"
-MAX_ITERATIONS=10   # max tool calls per message (default: 10)
-```
-
-3. Run it:
+#### One-line install (Linux/macOS)
 
 ```bash
-go run .
+curl -fsSL https://claw.gogram.fun | bash
+apexclaw
 ```
+
+This will:
+1. Download the latest binary for your OS/architecture
+2. Install to `/usr/local/bin` or `~/.local/bin`
+3. Launch an interactive setup wizard on first run
+4. Ask for your Telegram credentials
+5. Save to `.env` and start
+
+#### Manual setup
+
+1. You need: `go 1.22+`, `ffmpeg` (for voice)
+2. Clone and build:
+
+```bash
+git clone https://github.com/amarnathcjd/apexclaw
+cd apexclaw
+go build -o apexclaw .
+./apexclaw
+```
+
+3. On first run, you'll be prompted for:
+   - Telegram API ID
+   - Telegram API Hash
+   - Telegram Bot Token
+   - Owner ID (your Telegram Chat ID)
 
 ---
 
