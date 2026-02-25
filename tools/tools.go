@@ -39,6 +39,9 @@ var All = []*ToolDef{
 	WebFetch,
 	WebSearch,
 
+	IMDBSearch,
+	IMDBGetTitle,
+
 	BrowserOpen,
 	BrowserClick,
 	BrowserType,
@@ -128,4 +131,11 @@ var All = []*ToolDef{
 
 	DownloadYtdlp,
 	DownloadAria2c,
+
+	TGSendMessageWithButtons,
+	ReadDocument,
+	ListDocuments,
+	SummarizeDocument,
+
+	InstagramToTG,
 }

@@ -97,6 +97,47 @@ func (b *TelegramBot) Start() error {
 		return b.handlePhoto(m)
 	}, telegram.IsMedia)
 
+	b.client.On(telegram.OnCallback, func(c *telegram.CallbackQuery) error {
+		if c.Sender == nil {
+			return nil
+		}
+		userID := strconv.FormatInt(c.SenderID, 10)
+		if userID != Cfg.OwnerID {
+			c.Answer("Access denied", &telegram.CallbackOptions{Alert: true})
+			return nil
+		}
+
+		callbackData := c.DataString()
+		log.Printf("[TG] callback from %s: %q", userID, callbackData)
+
+		tgCtx := map[string]interface{}{
+			"owner_id":      userID,
+			"telegram_id":   c.ChatID,
+			"message_id":    int64(c.MessageID),
+			"callback_data": callbackData,
+		}
+		if c.ChatID < 0 {
+			tgCtx["group_id"] = c.ChatID
+		}
+		setTelegramContext(userID, tgCtx)
+
+		session := GetOrCreateAgentSession(userID)
+		result, err := session.RunStream(context.Background(), userID, fmt.Sprintf("[Button clicked: %s]", callbackData), func(s string) {})
+		if err != nil {
+			c.Answer(fmt.Sprintf("Error: %v", err), &telegram.CallbackOptions{Alert: true})
+			return nil
+		}
+
+		if result != "" {
+			msg, err := c.GetMessage()
+			if err == nil && msg != nil {
+				msg.Reply(result)
+			}
+		}
+
+		return nil
+	})
+
 	b.client.Idle()
 	return nil
 }
@@ -443,4 +484,19 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func TGSendMessageWithButtons(chatID int64, text string, kb *telegram.ReplyInlineMarkup) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not initialized"
+	}
+
+	_, err := heartbeatTGClient.SendMessage(chatID, text, &telegram.SendOptions{
+		ReplyMarkup: kb,
+	})
+	if err != nil {
+		return fmt.Sprintf("Error sending message: %v", err)
+	}
+
+	return fmt.Sprintf("Message sent to %d", chatID)
 }
