@@ -134,7 +134,15 @@ func buildSystemPrompt(reg *ToolRegistry) string {
 			"{\"rows\":[{\"buttons\":[{\"text\":\"ButtonText\",\"type\":\"data\",\"data\":\"callback_data\",\"style\":\"success\"}]}]}\n" +
 			"Then base64 encode it BEFORE passing to the tool.\n" +
 			"Styles: success=green, danger=red, primary=blue. Type: data=callback, url=link.\n" +
-			"Example base64 for green button: eyJyb3dzIjpbeyJidXR0b25zIjpbeyJ0ZXh0IjoiR3JlZW4iLCJ0eXBlIjoiZGF0YSIsImRhdGEiOiJjbGljayIsInN0eWxlIjoic3VjY2VzcyJ9XX1dfQ==\n\n",
+			"Example base64 for green button: eyJyb3dzIjpbeyJidXR0b25zIjpbeyJ0ZXh0IjoiR3JlZW4iLCJ0eXBlIjoiZGF0YSIsImRhdGEiOiJjbGljayIsInN0eWxlIjoic3VjY2VzcyJ9XX1dfQ==\n\n" +
+			"## Multiple Search Results (CRITICAL)\n" +
+			"When tvmaze_search, imdb_search or similar returns multiple results, ALWAYS use tg_send_message_buttons to let the user choose:\n" +
+			"- Show a brief intro text (e.g., \"Found multiple shows, which one?\") \n" +
+			"- Create one button per result (up to 5 per message)\n" +
+			"- Button text should be the title (e.g., \"Breaking Bad (US, 2008)\")\n" +
+			"- Button callback data should uniquely identify it (e.g., \"select_show_81189\" where 81189 is the ID)\n" +
+			"- User will click a button, triggering a callback with [Button clicked: callback_data] message\n" +
+			"- When callback arrives, parse it and fetch details for the selected item\n\n",
 	)
 
 	tools := reg.List()
@@ -190,6 +198,8 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 
+	var toolErrors []string
+
 	for i := range Cfg.MaxIterations {
 		reply, err := s.client.Send(ctx, s.model, s.history)
 		if err != nil {
@@ -213,6 +223,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
 		if isToolError(result) {
 			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
 		}
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 
@@ -224,7 +235,24 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 			}
 		}
 	}
-	return "Max iterations reached.", nil
+	// Ask AI to explain why it got stuck
+	s.history = append(s.history, model.Message{
+		Role: "user",
+		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
+	})
+
+	explanation, err := s.client.Send(ctx, s.model, s.history)
+	if err == nil {
+		explanation = cleanReply(explanation)
+		return "[MAX_ITERATIONS]\n" + explanation, nil
+	}
+
+	// Fallback if AI explanation fails
+	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
+	if len(toolErrors) > 0 {
+		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
+	}
+	return msg, nil
 }
 
 func istNow() time.Time {
@@ -242,6 +270,8 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 	s.mu.Unlock()
+
+	var toolErrors []string
 
 	for i := range Cfg.MaxIterations {
 		s.mu.Lock()
@@ -283,6 +313,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
 		if isToolError(result) {
 			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
 		}
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
@@ -296,7 +327,31 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			}
 		}
 	}
-	msg := "Max iterations reached."
+	// Ask AI to explain why it got stuck
+	s.mu.Lock()
+	s.history = append(s.history, model.Message{
+		Role: "user",
+		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
+	})
+	history := make([]model.Message, len(s.history))
+	copy(history, s.history)
+	s.mu.Unlock()
+
+	explanation, err := s.client.Send(ctx, s.model, history)
+	if err == nil {
+		explanation = cleanReply(explanation)
+		if onChunk != nil {
+			onChunk(explanation)
+		}
+		// Mark this as a max iterations response so Telegram handler knows
+		return "[MAX_ITERATIONS]\n" + explanation, nil
+	}
+
+	// Fallback if AI explanation fails
+	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
+	if len(toolErrors) > 0 {
+		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
+	}
 	if onChunk != nil {
 		onChunk(msg)
 	}
@@ -329,13 +384,17 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		return reply, nil
 	}
 
+	var toolErrors []string
+
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 	result := s.executeTool(funcName, argsJSON, senderID)
-	s.history = append(s.history, model.Message{
-		Role:    "user",
-		Content: fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result),
-	})
+	firstToolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
+	if isToolError(result) {
+		firstToolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+		toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
+	}
+	s.history = append(s.history, model.Message{Role: "user", Content: firstToolMsg})
 	s.mu.Unlock()
 
 	for range Cfg.MaxIterations {
@@ -366,11 +425,33 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res)
 		if isToolError(res) {
 			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", fn, res)
+			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", fn, res))
 		}
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 		s.mu.Unlock()
 	}
-	return "Max iterations reached.", nil
+	// Ask AI to explain why it got stuck
+	s.mu.Lock()
+	s.history = append(s.history, model.Message{
+		Role: "user",
+		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
+	})
+	finalHistory := make([]model.Message, len(s.history))
+	copy(finalHistory, s.history)
+	s.mu.Unlock()
+
+	explanation, err := s.client.Send(ctx, s.model, finalHistory)
+	if err == nil {
+		explanation = cleanReply(explanation)
+		return "[MAX_ITERATIONS]\n" + explanation, nil
+	}
+
+	// Fallback if AI explanation fails
+	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
+	if len(toolErrors) > 0 {
+		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
+	}
+	return msg, nil
 }
 
 func (s *AgentSession) Reset() {

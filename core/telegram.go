@@ -236,7 +236,7 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	session := GetOrCreateAgentSession(userID)
 
 	var buf strings.Builder
-	_, err := session.RunStream(timeoutCtx, userID, text, func(chunk string) {
+	result, err := session.RunStream(timeoutCtx, userID, text, func(chunk string) {
 		buf.WriteString(chunk)
 		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
 			b.safeSend(m, buf.String())
@@ -249,6 +249,15 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		_, _ = m.Reply("⚠️ Something went wrong. Please try again.")
 		return nil
 	}
+
+	if strings.Contains(result, "[MAX_ITERATIONS]") {
+		explanation := strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1)
+		explanation = strings.TrimSpace(explanation)
+		msg := "⚠️ <b>Couldn't complete the task:</b>\n\n" + explanation
+		_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
+		return nil
+	}
+
 	if buf.Len() > 0 {
 		b.safeSend(m, buf.String())
 	}

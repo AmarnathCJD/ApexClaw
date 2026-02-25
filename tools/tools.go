@@ -42,6 +42,12 @@ var All = []*ToolDef{
 	IMDBSearch,
 	IMDBGetTitle,
 
+	TVMazeSearch,
+	TVMazeNextEpisode,
+
+	PatBinCreate,
+	PatBinGet,
+
 	BrowserOpen,
 	BrowserClick,
 	BrowserType,
