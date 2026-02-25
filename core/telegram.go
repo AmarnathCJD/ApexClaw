@@ -27,16 +27,16 @@ type TelegramBot struct {
 
 var (
 	ctxMu  sync.Mutex
-	msgCtx = make(map[string]map[string]interface{})
+	msgCtx = make(map[string]map[string]any)
 )
 
-func setTelegramContext(userID string, ctx map[string]interface{}) {
+func setTelegramContext(userID string, ctx map[string]any) {
 	ctxMu.Lock()
 	msgCtx[userID] = ctx
 	ctxMu.Unlock()
 }
 
-func getTelegramContext(userID string) map[string]interface{} {
+func getTelegramContext(userID string) map[string]any {
 	ctxMu.Lock()
 	defer ctxMu.Unlock()
 	if ctx, ok := msgCtx[userID]; ok {
@@ -110,7 +110,7 @@ func (b *TelegramBot) Start() error {
 		callbackData := c.DataString()
 		log.Printf("[TG] callback from %s: %q", userID, callbackData)
 
-		tgCtx := map[string]interface{}{
+		tgCtx := map[string]any{
 			"owner_id":      userID,
 			"telegram_id":   c.ChatID,
 			"message_id":    int64(c.MessageID),
@@ -171,7 +171,7 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 
 	log.Printf("[TG] msg from %s (chat %d): %q", userID, m.ChatID(), truncate(text, 80))
 
-	tgCtx := map[string]interface{}{
+	tgCtx := map[string]any{
 		"owner_id":    userID,
 		"telegram_id": m.ChatID(),
 		"message_id":  int64(m.ID),
@@ -299,7 +299,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 
 	log.Printf("[TG] transcribed: %q", transcribed)
 
-	tgCtx := map[string]interface{}{
+	tgCtx := map[string]any{
 		"owner_id":    userID,
 		"telegram_id": m.ChatID(),
 		"message_id":  int64(m.ID),

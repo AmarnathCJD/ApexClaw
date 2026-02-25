@@ -8,7 +8,7 @@ import (
 var ScheduleTaskFn func(id, label, prompt, runAt, repeat, ownerID string, telegramID, messageID, groupID int64)
 var CancelTaskFn func(labelOrID string) bool
 var ListTasksFn func() string
-var GetTelegramContextFn func(userID string) map[string]interface{}
+var GetTelegramContextFn func(userID string) map[string]any
 
 var ScheduleTask = &ToolDef{
 	Name:        "schedule_task",

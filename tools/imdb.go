@@ -448,21 +448,22 @@ func tvmJsonError(msg string) string {
 	b, _ := json.Marshal(e)
 	return string(b)
 }
+
 type PatBinPaste struct {
-	ID              string `json:"id"`
-	Content         string `json:"content"`
-	Language        string `json:"language"`
-	IsPublic        bool   `json:"is_public"`
-	CreatedAt       string `json:"created_at"`
-	ExpiresAt       string `json:"expires_at"`
-	BurnAfterRead   bool   `json:"burn_after_read"`
-	ViewCount       int    `json:"view_count"`
-	MaxViews        int    `json:"max_views"`
+	ID            string `json:"id"`
+	Content       string `json:"content"`
+	Language      string `json:"language"`
+	IsPublic      bool   `json:"is_public"`
+	CreatedAt     string `json:"created_at"`
+	ExpiresAt     string `json:"expires_at"`
+	BurnAfterRead bool   `json:"burn_after_read"`
+	ViewCount     int    `json:"view_count"`
+	MaxViews      int    `json:"max_views"`
 }
 
 var PatBinCreate = &ToolDef{
 	Name:        "patbin_create",
-	Description: "Create a paste on PatBin (pastebin.fun). Supports syntax highlighting, expiration (1h/1d/1w), and burn-after-read. Returns paste URL and ID.",
+	Description: "Create a paste on PatBin (patbin.fun). Supports syntax highlighting, expiration (1h/1d/1w), and burn-after-read. Returns paste URL and ID.",
 	Args: []ToolArg{
 		{Name: "content", Description: "Paste content/code", Required: true},
 		{Name: "language", Description: "Language for syntax highlighting (go, py, js, java, cpp, rust, sh, sql, json, xml, etc)", Required: false},
@@ -488,11 +489,11 @@ var PatBinCreate = &ToolDef{
 
 		result := map[string]string{
 			"id":  paste.ID,
-			"url": fmt.Sprintf("https://pastebin.fun/%s", paste.ID),
-			"raw": fmt.Sprintf("https://pastebin.fun/%s/raw", paste.ID),
+			"url": fmt.Sprintf("https://patbin.fun/%s", paste.ID),
+			"raw": fmt.Sprintf("https://patbin.fun/%s/raw", paste.ID),
 		}
 		if language != "" {
-			result["syntax_url"] = fmt.Sprintf("https://pastebin.fun/%s.%s", paste.ID, languageToExt(language))
+			result["syntax_url"] = fmt.Sprintf("https://patbin.fun/%s.%s", paste.ID, languageToExt(language))
 		}
 
 		b, _ := json.Marshal(result)

@@ -2,7 +2,7 @@ package core
 
 import "apexclaw/tools"
 
-func GetTaskContext() map[string]interface{} {
+func GetTaskContext() map[string]any {
 	return nil
 }
 

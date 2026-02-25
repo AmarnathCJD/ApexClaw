@@ -235,9 +235,9 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 			}
 		}
 	}
-	// Ask AI to explain why it got stuck
+
 	s.history = append(s.history, model.Message{
-		Role: "user",
+		Role:    "user",
 		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
 	})
 
@@ -247,7 +247,6 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 		return "[MAX_ITERATIONS]\n" + explanation, nil
 	}
 
-	// Fallback if AI explanation fails
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
 	if len(toolErrors) > 0 {
 		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
@@ -327,10 +326,10 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			}
 		}
 	}
-	// Ask AI to explain why it got stuck
+
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{
-		Role: "user",
+		Role:    "user",
 		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
 	})
 	history := make([]model.Message, len(s.history))
@@ -343,11 +342,10 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		if onChunk != nil {
 			onChunk(explanation)
 		}
-		// Mark this as a max iterations response so Telegram handler knows
+
 		return "[MAX_ITERATIONS]\n" + explanation, nil
 	}
 
-	// Fallback if AI explanation fails
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
 	if len(toolErrors) > 0 {
 		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
@@ -430,10 +428,10 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 		s.mu.Unlock()
 	}
-	// Ask AI to explain why it got stuck
+
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{
-		Role: "user",
+		Role:    "user",
 		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
 	})
 	finalHistory := make([]model.Message, len(s.history))
@@ -446,7 +444,6 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		return "[MAX_ITERATIONS]\n" + explanation, nil
 	}
 
-	// Fallback if AI explanation fails
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
 	if len(toolErrors) > 0 {
 		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")

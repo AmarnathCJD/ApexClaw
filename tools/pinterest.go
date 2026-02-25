@@ -70,10 +70,10 @@ func pinterestAPIGet(reqURL string) ([]byte, error) {
 
 var pinImgSizes = []string{"orig", "736x", "474x", "236x"}
 
-func extractImgURL(images map[string]interface{}) string {
+func extractImgURL(images map[string]any) string {
 	for _, size := range pinImgSizes {
 		if entry, ok := images[size]; ok {
-			if m, ok := entry.(map[string]interface{}); ok {
+			if m, ok := entry.(map[string]any); ok {
 				if u, ok := m["url"].(string); ok && u != "" {
 					return u
 				}
@@ -114,7 +114,7 @@ func fetchPinterestImages(query string, lim int, offset int) ([]string, error) {
 }
 
 func extractImgURLsFromPWSJSON(jsonStr string, lim, offset int) ([]string, error) {
-	var root map[string]interface{}
+	var root map[string]any
 	if err := json.Unmarshal([]byte(jsonStr), &root); err != nil {
 
 		var inner string
@@ -154,11 +154,11 @@ func extractImgURLsFromPWSJSON(jsonStr string, lim, offset int) ([]string, error
 	return deduped[start:end], nil
 }
 
-func walkForImages(v interface{}, out *[]string) {
+func walkForImages(v any, out *[]string) {
 	switch node := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		if images, ok := node["images"]; ok {
-			if imgMap, ok := images.(map[string]interface{}); ok {
+			if imgMap, ok := images.(map[string]any); ok {
 				if u := extractImgURL(imgMap); u != "" {
 					*out = append(*out, u)
 					return
@@ -168,7 +168,7 @@ func walkForImages(v interface{}, out *[]string) {
 		for _, child := range node {
 			walkForImages(child, out)
 		}
-	case []interface{}:
+	case []any:
 		for _, item := range node {
 			walkForImages(item, out)
 		}
@@ -202,7 +202,7 @@ func extractImgURLsFromHTML(html string, lim, offset int) ([]string, error) {
 	return urls[start:end], nil
 }
 
-func formatPin(pin map[string]interface{}) string {
+func formatPin(pin map[string]any) string {
 	id, _ := pin["id"].(string)
 	desc := ""
 	if d, ok := pin["description"].(string); ok {
@@ -215,14 +215,14 @@ func formatPin(pin map[string]interface{}) string {
 	}
 
 	imgURL := ""
-	if images, ok := pin["images"].(map[string]interface{}); ok {
+	if images, ok := pin["images"].(map[string]any); ok {
 		imgURL = extractImgURL(images)
 	}
 
 	pinURL := fmt.Sprintf("https://www.pinterest.com/pin/%s/", id)
 
 	board := ""
-	if b, ok := pin["board"].(map[string]interface{}); ok {
+	if b, ok := pin["board"].(map[string]any); ok {
 		if name, ok := b["name"].(string); ok {
 			board = name
 		}
@@ -363,7 +363,7 @@ var PinterestGetPin = &ToolDef{
 
 		var resp struct {
 			ResourceResponse struct {
-				Data map[string]interface{} `json:"data"`
+				Data map[string]any `json:"data"`
 			} `json:"resource_response"`
 		}
 
@@ -377,7 +377,7 @@ var PinterestGetPin = &ToolDef{
 		}
 
 		imgURL := ""
-		if images, ok := pin["images"].(map[string]interface{}); ok {
+		if images, ok := pin["images"].(map[string]any); ok {
 			imgURL = extractImgURL(images)
 		}
 
@@ -386,7 +386,7 @@ var PinterestGetPin = &ToolDef{
 			desc = strings.TrimSpace(d)
 		}
 		creator := ""
-		if pinner, ok := pin["pinner"].(map[string]interface{}); ok {
+		if pinner, ok := pin["pinner"].(map[string]any); ok {
 			name, _ := pinner["full_name"].(string)
 			uname, _ := pinner["username"].(string)
 			if name != "" {
