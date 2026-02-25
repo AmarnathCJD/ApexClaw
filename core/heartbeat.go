@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"context"
@@ -141,24 +141,17 @@ func runHeartbeatTick() {
 		}
 		if now.After(runAt) || now.Equal(runAt) {
 			toRun = append(toRun, t)
-			switch t.Repeat {
-			case "minutely":
-				t.RunAt = runAt.Add(time.Minute).Format(time.RFC3339)
-				remaining = append(remaining, t)
-			case "hourly":
-				t.RunAt = runAt.Add(time.Hour).Format(time.RFC3339)
-				remaining = append(remaining, t)
-			case "daily":
-				t.RunAt = runAt.Add(24 * time.Hour).Format(time.RFC3339)
-				remaining = append(remaining, t)
-			case "weekly":
-				t.RunAt = runAt.Add(7 * 24 * time.Hour).Format(time.RFC3339)
-				remaining = append(remaining, t)
-
+			if t.Repeat != "" {
+				nextRun := calcNextRun(runAt, now, t.Repeat)
+				if nextRun.After(runAt) {
+					t.RunAt = nextRun.Format(time.RFC3339)
+					remaining = append(remaining, t)
+				}
 			}
 		} else {
 			remaining = append(remaining, t)
 		}
+
 	}
 	hbStore.tasks = remaining
 	hbStore.mu.Unlock()
@@ -169,6 +162,43 @@ func runHeartbeatTick() {
 	if len(toRun) > 0 {
 		persistHeartbeatTasks()
 	}
+}
+
+func calcNextRun(runAt, now time.Time, repeat string) time.Time {
+	var add time.Duration
+	repeat = strings.ToLower(strings.TrimSpace(repeat))
+	switch repeat {
+	case "minutely":
+		add = time.Minute
+	case "hourly":
+		add = time.Hour
+	case "daily":
+		add = 24 * time.Hour
+	case "weekly":
+		add = 7 * 24 * time.Hour
+	default:
+		if strings.HasPrefix(repeat, "every_") {
+			var num int
+			var unit string
+			if _, err := fmt.Sscanf(repeat, "every_%d_%s", &num, &unit); err == nil && num > 0 {
+				if strings.HasPrefix(unit, "minute") {
+					add = time.Duration(num) * time.Minute
+				} else if strings.HasPrefix(unit, "hour") {
+					add = time.Duration(num) * time.Hour
+				} else if strings.HasPrefix(unit, "day") {
+					add = time.Duration(num) * 24 * time.Hour
+				}
+			}
+		}
+	}
+	if add == 0 {
+		return runAt
+	}
+	nextRun := runAt.Add(add)
+	for nextRun.Before(now) || nextRun.Equal(now) {
+		nextRun = nextRun.Add(add)
+	}
+	return nextRun
 }
 
 func fireHeartbeatTask(t ScheduledTask) {

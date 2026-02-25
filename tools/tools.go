@@ -125,4 +125,7 @@ var All = []*ToolDef{
 	TodoList,
 	TodoDone,
 	TodoDelete,
+
+	DownloadYtdlp,
+	DownloadAria2c,
 }

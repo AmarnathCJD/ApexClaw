@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"bufio"
@@ -77,10 +77,10 @@ func init() {
 	if envUpdated {
 		f, err := os.OpenFile(".env", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
-			f.WriteString(fmt.Sprintf("\nTELEGRAM_API_ID=%d\n", Cfg.TelegramAPIID))
-			f.WriteString(fmt.Sprintf("TELEGRAM_API_HASH=%s\n", Cfg.TelegramAPIHash))
-			f.WriteString(fmt.Sprintf("TELEGRAM_BOT_TOKEN=%s\n", Cfg.TelegramBotToken))
-			f.WriteString(fmt.Sprintf("OWNER_ID=%s\n", Cfg.OwnerID))
+			fmt.Fprintf(f, "\nTELEGRAM_API_ID=%d\n", Cfg.TelegramAPIID)
+			fmt.Fprintf(f, "TELEGRAM_API_HASH=%s\n", Cfg.TelegramAPIHash)
+			fmt.Fprintf(f, "TELEGRAM_BOT_TOKEN=%s\n", Cfg.TelegramBotToken)
+			fmt.Fprintf(f, "OWNER_ID=%s\n", Cfg.OwnerID)
 			f.Close()
 			log.Printf("[ENV] Saved new credentials to .env")
 		} else {

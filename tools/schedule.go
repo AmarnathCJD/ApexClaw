@@ -17,7 +17,7 @@ var ScheduleTask = &ToolDef{
 		{Name: "label", Description: "Short human-readable name for this task (e.g. 'morning_briefing')", Required: true},
 		{Name: "prompt", Description: "The prompt or instruction the bot should run at the scheduled time (e.g. 'Check weather in Kochi and summarize')", Required: true},
 		{Name: "run_at", Description: "When to first run, in ISO 8601 / RFC3339 format (e.g. '2026-02-25T08:00:00+05:30')", Required: true},
-		{Name: "repeat", Description: "Repeat interval: 'once', 'minutely', 'hourly', 'daily', 'weekly'. Default: 'once'", Required: false},
+		{Name: "repeat", Description: "Repeat interval: 'once', 'minutely', 'hourly', 'daily', 'weekly', or 'every_N_minutes' / 'every_N_hours' / 'every_N_days'. Default: 'once'", Required: false},
 	},
 	Execute: func(args map[string]string) string {
 		return "Error: schedule_task requires context"

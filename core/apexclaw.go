@@ -1,10 +1,11 @@
-package main
+package core
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -104,7 +105,8 @@ func buildSystemPrompt(reg *ToolRegistry) string {
 			"- The prompt field must instruct the agent to fetch live data at that moment (e.g. 'fetch current BTC price using web_search and report it'). Never embed current values.\n" +
 			"- Set run_at by adding the requested duration to [Current time] shown at the top of each message.\n" +
 			"- run_at MUST use IST offset: format is YYYY-MM-DDTHH:MM:SS+05:30. Example: if now is 2026-02-24T22:39:00+05:30 and user says 'in 5 minutes', run_at=\"2026-02-24T22:44:00+05:30\".\n" +
-			"- run_at MUST be in the future. Never use a past timestamp.\n\n" +
+			"- run_at MUST be in the future. Never use a past timestamp.\n" +
+			"- For repeated tasks, set the 'repeat' parameter to 'minutely', 'hourly', 'daily', 'weekly', or use 'every_N_minutes', 'every_N_hours', 'every_N_days' (e.g. 'every_30_minutes').\n\n" +
 
 			"## Response Format\n" +
 			"Plain text. Use \\n for line breaks. Concise — quality > quantity.\n" +
@@ -438,4 +440,28 @@ func DeleteAgentSession(key string) {
 	agentSessions.Lock()
 	delete(agentSessions.m, key)
 	agentSessions.Unlock()
+}
+
+var toolCallRe = regexp.MustCompile(`(?s)<tool_call>(.*?)(?:/>|</tool_call>)`)
+var attrRe = regexp.MustCompile(`(\w+)="([^"]*)"`)
+
+func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
+	m := toolCallRe.FindStringSubmatch(text)
+	if m == nil {
+		return "", "", false
+	}
+	inner := strings.TrimSpace(m[1])
+	parts := strings.SplitN(inner, " ", 2)
+	funcName = parts[0]
+	attrsStr := ""
+	if len(parts) > 1 {
+		attrsStr = parts[1]
+	}
+	attrs := attrRe.FindAllStringSubmatch(attrsStr, -1)
+	kv := make(map[string]string, len(attrs))
+	for _, a := range attrs {
+		kv[a[1]] = a[2]
+	}
+	b, _ := json.Marshal(kv)
+	return funcName, string(b), true
 }
