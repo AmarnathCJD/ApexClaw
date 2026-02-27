@@ -142,7 +142,6 @@ func (b *TelegramBot) Start() error {
 		return nil
 	})
 
-	b.client.Idle()
 	return nil
 }
 

@@ -2,7 +2,6 @@ package setup
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -294,14 +293,26 @@ func saveToEnv(fields []*Field) error {
 }
 
 func InteractiveSetup() error {
-	// Ask user if they want to run setup
+	// Only show setup on first run (no Telegram credentials set)
+	requiredVars := []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_BOT_TOKEN", "OWNER_ID"}
+	hasSetup := true
+	for _, v := range requiredVars {
+		if os.Getenv(v) == "" {
+			hasSetup = false
+			break
+		}
+	}
+
+	if hasSetup {
+		return nil // Already configured, skip setup
+	}
+
 	fmt.Print("\n🔧 Run configuration setup? (y/n): ")
 	var response string
 	fmt.Scanln(&response)
 
 	if strings.ToLower(strings.TrimSpace(response)) != "y" {
-		log.Println("[SETUP] Setup skipped by user")
-		return nil
+		return nil // User skipped setup
 	}
 
 	m := NewSetup()
