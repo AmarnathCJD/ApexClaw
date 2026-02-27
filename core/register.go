@@ -7,7 +7,6 @@ func GetTaskContext() map[string]any {
 }
 
 func RegisterBuiltinTools(reg *ToolRegistry) {
-
 	tools.ScheduleTaskFn = func(id, label, prompt, runAt, repeat, ownerID string, telegramID, messageID, groupID int64) {
 		ScheduleTask(ScheduledTask{
 			ID:         id,
@@ -36,11 +35,10 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 		})
 	}
 
-	// === Telegram Function Pointer Wiring ===
-	// All now accept peer strings (IDs, usernames) - core handles ResolvePeer
 	tools.GetTelegramContextFn = getTelegramContext
 	tools.SendTGFileFn = TGSendFile
 	tools.SendTGMsgFn = TGSendMessage
+	tools.SendTGPhotoFn = TGSendPhoto
 	tools.SendTGPhotoURLFn = TGSendPhotoURL
 	tools.SendTGAlbumURLsFn = TGSendAlbumURLs
 	tools.SetBotDpFn = TGSetBotDp

@@ -27,8 +27,45 @@ func TGSendFile(peer string, filePath, caption string) string {
 	if caption != "" {
 		opts.Caption = caption
 	}
-	if _, err := heartbeatTGClient.SendMedia(resolvedPeer, filePath, opts); err != nil {
+
+	var media any = filePath
+	if strings.Contains(filePath, "_") || len(filePath) > 20 {
+		if m, err := telegram.ResolveBotFileID(filePath); err == nil {
+			media = m
+		}
+	}
+
+	if _, err := heartbeatTGClient.SendMedia(resolvedPeer, media, opts); err != nil {
 		return fmt.Sprintf("Error sending file: %v", err)
+	}
+	return ""
+}
+
+// TGSendPhoto sends a photo to a Telegram chat
+func TGSendPhoto(peer string, pathOrFileID, caption string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+
+	resolvedPeer, err := TGResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving peer: %v", err)
+	}
+
+	opts := &telegram.MediaOptions{}
+	if caption != "" {
+		opts.Caption = caption
+	}
+
+	var media any = pathOrFileID
+	if strings.Contains(pathOrFileID, "_") || len(pathOrFileID) > 20 {
+		if m, err := telegram.ResolveBotFileID(pathOrFileID); err == nil {
+			media = m
+		}
+	}
+
+	if _, err := heartbeatTGClient.SendMedia(resolvedPeer, media, opts); err != nil {
+		return fmt.Sprintf("Error sending photo: %v", err)
 	}
 	return ""
 }
@@ -644,8 +681,9 @@ func TGGetProfilePhotos(peer string, limit int) string {
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Profile Photos (%d):\n\n", len(photos))
-	for i := range photos {
-		fmt.Fprintf(&sb, "%d. Photo fetched\n", i+1)
+	for i, p := range photos {
+		fileID := telegram.PackBotFileID(p)
+		fmt.Fprintf(&sb, "%d. FileID: %s\n", i+1, fileID)
 	}
 
 	return strings.TrimRight(sb.String(), "\n")

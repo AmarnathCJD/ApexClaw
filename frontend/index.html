@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApexClaw Web</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@500;600&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+</head>
+
+<body>
+    <div id="auth-overlay" class="overlay">
+        <div class="auth-box">
+            <h1>ApexClaw</h1>
+            <p class="subtitle">AI Agent with Built-in Tools</p>
+            <div class="auth-form">
+                <label for="code-input">Login Code</label>
+                <input type="password" id="code-input" placeholder="000000" maxlength="6" autofocus inputmode="numeric">
+                <button id="auth-btn" class="primary-btn">Sign In</button>
+                <p id="auth-error" class="error-msg"></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="change-code-modal" class="overlay hidden">
+        <div class="modal-box">
+            <h2>Secure Your Account</h2>
+            <p>Set a new login code for your ApexClaw web interface.</p>
+            <div class="modal-form">
+                <label for="new-code-input">New Login Code</label>
+                <input type="password" id="new-code-input" placeholder="000000" maxlength="6" autofocus
+                    inputmode="numeric">
+                <p id="change-code-error" class="error-msg"></p>
+                <div class="modal-actions">
+                    <button id="change-code-submit" class="primary-btn">Update Code</button>
+                    <button id="change-code-skip" class="secondary-btn">Later</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-overlay" class="overlay hidden">
+        <div class="settings-box">
+            <div class="settings-header">
+                <h2>Configuration (.env)</h2>
+                <button id="close-settings-btn" class="icon-btn">✕</button>
+            </div>
+            <div id="settings-form" class="settings-form">
+                <!-- Settings inputs will be injected here -->
+            </div>
+            <div class="settings-footer">
+                <button id="save-settings-btn" class="primary-btn">Save Changes</button>
+                <p id="settings-status"></p>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container hidden" id="main-app">
+        <header>
+            <div class="header-logo">ApexClaw</div>
+            <div class="header-actions">
+                <button id="open-settings-btn" class="icon-btn" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="chat-container">
+            <div id="chat-history" class="chat-history">
+                <div class="welcome-screen">
+                    <h1>Good afternoon.</h1>
+                    <p>How can ApexClaw help you today?</p>
+                </div>
+            </div>
+
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <textarea id="chat-input" placeholder="Message ApexClaw..." rows="2" autofocus></textarea>
+                    <button id="send-btn" class="send-button" disabled>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 4L12 20M12 4L4 12M12 4L20 12" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    ApexClaw can make mistakes. Please verify important information.
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+
+</html>

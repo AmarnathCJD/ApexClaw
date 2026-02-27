@@ -62,47 +62,47 @@ func NewSetup() *Model {
 			key:         "TELEGRAM_API_ID",
 			label:       "Telegram API ID",
 			placeholder: "123456789",
-			required:    true,
+			required:    false,
 			secret:      false,
 		},
 		{
 			key:         "TELEGRAM_API_HASH",
 			label:       "Telegram API Hash",
 			placeholder: "abcdef123456...",
-			required:    true,
+			required:    false,
 			secret:      true,
 		},
 		{
 			key:         "TELEGRAM_BOT_TOKEN",
 			label:       "Telegram Bot Token",
 			placeholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-			required:    true,
+			required:    false,
 			secret:      true,
 		},
 		{
 			key:         "OWNER_ID",
 			label:       "Owner ID (Your Telegram Chat ID)",
 			placeholder: "123456789",
-			required:    true,
+			required:    false,
 			secret:      false,
 		},
 		{
 			key:         "ZAI_TOKEN",
-			label:       "ZAI Token (optional)",
+			label:       "ZAI Token",
 			placeholder: "your-token-here",
 			required:    false,
 			secret:      true,
 		},
 		{
 			key:         "EMAIL_ADDRESS",
-			label:       "Gmail Address (optional)",
+			label:       "Gmail Address",
 			placeholder: "your.email@gmail.com",
 			required:    false,
 			secret:      false,
 		},
 		{
 			key:         "EMAIL_PASSWORD",
-			label:       "Gmail App Password (optional)",
+			label:       "Gmail App Password",
 			placeholder: "16-character app password",
 			required:    false,
 			secret:      true,
@@ -249,7 +249,7 @@ func (m *Model) submit() tea.Cmd {
 			if field.required && field.value == "" {
 				return ErrorMsg(fmt.Errorf("'%s' is required", field.label))
 			}
-			if field.key == "TELEGRAM_API_ID" || field.key == "OWNER_ID" {
+			if field.value != "" && (field.key == "TELEGRAM_API_ID" || field.key == "OWNER_ID") {
 				if _, err := strconv.Atoi(field.value); err != nil {
 					return ErrorMsg(fmt.Errorf("'%s' must be numeric", field.label))
 				}
@@ -294,17 +294,13 @@ func saveToEnv(fields []*Field) error {
 }
 
 func InteractiveSetup() error {
-	requiredVars := []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_BOT_TOKEN", "OWNER_ID"}
-	skipSetup := true
-	for _, v := range requiredVars {
-		if os.Getenv(v) == "" {
-			skipSetup = false
-			break
-		}
-	}
+	// Ask user if they want to run setup
+	fmt.Print("\n🔧 Run configuration setup? (y/n): ")
+	var response string
+	fmt.Scanln(&response)
 
-	if skipSetup {
-		log.Println("[SETUP] All required variables found, skipping setup wizard")
+	if strings.ToLower(strings.TrimSpace(response)) != "y" {
+		log.Println("[SETUP] Setup skipped by user")
 		return nil
 	}
 

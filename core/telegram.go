@@ -3,13 +3,16 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +21,7 @@ import (
 	"apexclaw/model"
 
 	"github.com/amarnathcjd/gogram/telegram"
+	"github.com/joho/godotenv"
 )
 
 type TelegramBot struct {
@@ -112,6 +116,9 @@ func (b *TelegramBot) Start() error {
 
 		tgCtx := map[string]any{
 			"owner_id":      userID,
+			"sender_id":     userID,
+			"my_id":         userID,
+			"chat_id":       c.ChatID,
 			"telegram_id":   c.ChatID,
 			"message_id":    int64(c.MessageID),
 			"callback_data": callbackData,
@@ -122,17 +129,14 @@ func (b *TelegramBot) Start() error {
 		setTelegramContext(userID, tgCtx)
 
 		session := GetOrCreateAgentSession(userID)
-		result, err := session.RunStream(context.Background(), userID, fmt.Sprintf("[Button clicked: %s]", callbackData), func(s string) {})
+
+		onChunk, flush := b.newStreamHandler(c.ChatID, int64(c.MessageID))
+		_, err := session.RunStream(context.Background(), userID, fmt.Sprintf("[Button clicked: %s]", callbackData), onChunk)
+		flush()
+
 		if err != nil {
 			c.Answer(fmt.Sprintf("Error: %v", err), &telegram.CallbackOptions{Alert: true})
 			return nil
-		}
-
-		if result != "" {
-			msg, err := c.GetMessage()
-			if err == nil && msg != nil {
-				msg.Reply(result)
-			}
 		}
 
 		return nil
@@ -172,15 +176,24 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	log.Printf("[TG] msg from %s (chat %d): %q", userID, m.ChatID(), truncate(text, 80))
 
 	tgCtx := map[string]any{
-		"owner_id":    userID,
-		"telegram_id": m.ChatID(),
-		"message_id":  int64(m.ID),
+		"owner_id":        userID,
+		"sender_id":       userID,
+		"my_id":           userID,
+		"chat_id":         m.ChatID(),
+		"telegram_id":     m.ChatID(),
+		"message_id":      int64(m.ID),
+		"is_private_chat": m.IsPrivate(),
+		"chat_type":       "private",
 	}
-	if m.ChatID() < 0 {
+	if !m.IsPrivate() {
+		tgCtx["chat_type"] = "group/channel"
 		tgCtx["group_id"] = m.ChatID()
 	}
 	if m.IsReply() {
 		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
+		if r, err := m.GetReplyMessage(); err == nil {
+			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
+		}
 	}
 	setTelegramContext(userID, tgCtx)
 
@@ -228,28 +241,30 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		return err
 	}
 
+	// Handle /webcode command
+	parts := strings.Fields(text)
+	if len(parts) > 0 && parts[0] == "/webcode" {
+		return handleWebCodeCommand(m, parts)
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	b.sendTyping(m)
 	session := GetOrCreateAgentSession(userID)
 
-	var buf strings.Builder
-	result, err := session.RunStream(timeoutCtx, userID, text, func(chunk string) {
-		buf.WriteString(chunk)
-		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
-			b.safeSend(m, buf.String())
-			buf.Reset()
-		}
-	})
+	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
+	result, err := session.RunStream(timeoutCtx, userID, text, onChunk)
 
 	if err != nil {
+		flush()
 		log.Printf("[TG] agent error for %s: %v", userID, err)
 		_, _ = m.Reply("⚠️ Something went wrong. Please try again.")
 		return nil
 	}
 
 	if strings.Contains(result, "[MAX_ITERATIONS]") {
+		flush()
 		explanation := strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1)
 		explanation = strings.TrimSpace(explanation)
 		msg := "⚠️ <b>Couldn't complete the task:</b>\n\n" + explanation
@@ -257,9 +272,7 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		return nil
 	}
 
-	if buf.Len() > 0 {
-		b.safeSend(m, buf.String())
-	}
+	flush()
 	return nil
 }
 
@@ -300,11 +313,17 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 
 	tgCtx := map[string]any{
 		"owner_id":    userID,
+		"sender_id":   userID,
+		"my_id":       userID,
+		"chat_id":     m.ChatID(),
 		"telegram_id": m.ChatID(),
 		"message_id":  int64(m.ID),
 	}
 	if m.IsReply() {
 		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
+		if r, err := m.GetReplyMessage(); err == nil {
+			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
+		}
 	}
 	setTelegramContext(userID, tgCtx)
 
@@ -312,21 +331,16 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
-	var buf strings.Builder
-	_, err = session.RunStream(timeoutCtx, userID, transcribed, func(chunk string) {
-		buf.WriteString(chunk)
-		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
-			b.safeSend(m, buf.String())
-			buf.Reset()
-		}
-	})
+
+	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
+	_, err = session.RunStream(timeoutCtx, userID, transcribed, onChunk)
+
+	flush()
+
 	if err != nil {
 		log.Printf("[TG] agent error for voice: %v", err)
 		_, _ = m.Reply("⚠️ Something went wrong processing your voice message.")
 		return nil
-	}
-	if buf.Len() > 0 {
-		b.safeSend(m, buf.String())
 	}
 	return nil
 }
@@ -390,27 +404,39 @@ func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
 	}
 
 	log.Printf("[TG] image uploaded: id=%s", uploadedFile.ID)
+
+	tgCtx := map[string]any{
+		"owner_id":    userID,
+		"sender_id":   userID,
+		"my_id":       userID,
+		"chat_id":     m.ChatID(),
+		"telegram_id": m.ChatID(),
+		"message_id":  int64(m.ID),
+	}
+	if m.ChatID() < 0 {
+		tgCtx["group_id"] = m.ChatID()
+	}
+	if m.IsReply() {
+		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
+		if r, err := m.GetReplyMessage(); err == nil {
+			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
+		}
+	}
+	setTelegramContext(userID, tgCtx)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
 
-	var buf strings.Builder
-	_, err = session.RunStreamWithFiles(ctx, userID, caption, []*model.UpstreamFile{uploadedFile}, func(chunk string) {
-		buf.WriteString(chunk)
-		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
-			b.safeSend(m, buf.String())
-			buf.Reset()
-		}
-	})
+	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
+	_, err = session.RunStreamWithFiles(ctx, userID, caption, []*model.UpstreamFile{uploadedFile}, onChunk)
+	flush()
 
 	if err != nil {
 		log.Printf("[TG] agent error for image: %v", err)
 		_, _ = m.Reply("⚠️ Something went wrong analyzing the image.")
 		return nil
-	}
-	if buf.Len() > 0 {
-		b.safeSend(m, buf.String())
 	}
 	return nil
 }
@@ -492,4 +518,181 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func humanToolAction(toolName string) string {
+	switch toolName {
+	case "web_search", "github_search", "youtube_search", "imdb_search", "tvmaze_search":
+		return "Searching the web"
+	case "web_fetch", "read_document", "read_email", "wikipedia":
+		return "Reading information"
+	case "exec", "run_python":
+		return "Thinking"
+	case "read_file":
+		return "Reading file"
+	case "write_file", "append_file", "delete_file", "move_file", "create_dir":
+		return "Modifying files"
+	case "list_dir", "search_files":
+		return "Looking through files"
+	case "tg_get_profile_photos":
+		return "Checking profile photos"
+	case "tg_send_file", "tg_send_message", "tg_send_message_buttons":
+		return "Sending message"
+	case "tg_download", "download_ytdlp", "download_aria2c":
+		return "Downloading media"
+	case "tg_get_chat_info", "tg_get_members", "tg_get_message":
+		return "Checking chat details"
+	case "weather":
+		return "Checking the weather"
+	case "system_info", "process_list", "cron_status":
+		return "Checking system status"
+	case "schedule_task", "timer":
+		return "Setting up a task"
+	}
+	name := strings.ReplaceAll(toolName, "_", " ")
+	return "Using " + name
+}
+
+func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
+	if replyToMsgID > 0 {
+		opts.ReplyID = int32(replyToMsgID)
+	}
+	if _, err := b.client.SendMessage(chatID, text, opts); err != nil {
+		plain := strings.NewReplacer(
+			"<b>", "", "</b>", "", "<i>", "", "</i>", "",
+			"<code>", "", "</code>", "", "<pre>", "", "</pre>", "",
+		).Replace(text)
+		opts.ParseMode = ""
+		b.client.SendMessage(chatID, plain, opts)
+	}
+}
+
+func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64) (func(string), func()) {
+	var buf strings.Builder
+	var statusMsgID int32
+
+	flush := func() {
+		if statusMsgID > 0 {
+			b.client.DeleteMessages(chatID, []int32{statusMsgID})
+			statusMsgID = -1
+		}
+		if buf.Len() == 0 {
+			return
+		}
+		b.safeSendText(chatID, replyToMsgID, buf.String())
+		buf.Reset()
+	}
+
+	onChunk := func(chunk string) {
+		if strings.HasPrefix(chunk, "__TOOL_CALL:") {
+			return
+		}
+		if strings.HasPrefix(chunk, "__TOOL_RESULT:") {
+			toolName := strings.TrimPrefix(chunk, "__TOOL_RESULT:")
+			toolName = strings.TrimSuffix(toolName, "__\n")
+
+			action := humanToolAction(toolName)
+			text := fmt.Sprintf("⏳ <i>%s...</i>", action)
+
+			if statusMsgID == 0 {
+				opts := &telegram.SendOptions{ParseMode: telegram.HTML}
+				if replyToMsgID > 0 {
+					opts.ReplyID = int32(replyToMsgID)
+				}
+				if sent, err := b.client.SendMessage(chatID, text, opts); err == nil && sent != nil {
+					statusMsgID = sent.ID
+				} else {
+					statusMsgID = -1
+				}
+			} else if statusMsgID > 0 {
+				b.client.EditMessage(chatID, statusMsgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
+			}
+			return
+		}
+
+		if statusMsgID > 0 {
+			b.client.DeleteMessages(chatID, []int32{statusMsgID})
+			statusMsgID = -1
+		}
+
+		buf.WriteString(chunk)
+		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
+			flush()
+		}
+	}
+
+	return onChunk, flush
+}
+
+func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
+	if len(parts) == 1 {
+		_, err := m.Reply(
+			"🔐 Web Login Code Commands:\n\n" +
+				"/webcode show — Show current code\n" +
+				"/webcode set <newcode> — Set specific 6-digit code\n" +
+				"/webcode random — Generate random code",
+		)
+		return err
+	}
+
+	switch parts[1] {
+	case "show":
+		_, err := m.Reply(fmt.Sprintf("🔐 Current web login code: `%s`", Cfg.WebLoginCode))
+		return err
+
+	case "set":
+		if len(parts) < 3 {
+			_, err := m.Reply("Usage: /webcode set <6-digit-code>")
+			return err
+		}
+		newCode := parts[2]
+		if !regexp.MustCompile(`^\d{6}$`).MatchString(newCode) {
+			_, err := m.Reply("❌ Code must be exactly 6 digits.")
+			return err
+		}
+		oldCode := Cfg.WebLoginCode
+		Cfg.WebLoginCode = newCode
+		envMap, _ := godotenv.Read()
+		if envMap == nil {
+			envMap = make(map[string]string)
+		}
+		envMap["WEB_LOGIN_CODE"] = newCode
+		envMap["WEB_FIRST_LOGIN"] = "false"
+		godotenv.Write(envMap, ".env")
+		_, err := m.Reply(fmt.Sprintf(
+			"✅ Web login code changed!\nOld: `%s`\nNew: `%s`",
+			oldCode, newCode,
+		))
+		return err
+
+	case "random":
+		newCode := GenerateRandomCode()
+		oldCode := Cfg.WebLoginCode
+		Cfg.WebLoginCode = newCode
+		envMap, _ := godotenv.Read()
+		if envMap == nil {
+			envMap = make(map[string]string)
+		}
+		envMap["WEB_LOGIN_CODE"] = newCode
+		envMap["WEB_FIRST_LOGIN"] = "false"
+		godotenv.Write(envMap, ".env")
+		_, err := m.Reply(fmt.Sprintf(
+			"🎲 Random web login code generated!\nOld: `%s`\nNew: `%s`",
+			oldCode, newCode,
+		))
+		return err
+
+	default:
+		_, err := m.Reply("Unknown subcommand. Use: /webcode show | set <code> | random")
+		return err
+	}
+}
+
+func GenerateRandomCode() string {
+	n, _ := rand.Int(rand.Reader, big.NewInt(900000))
+	return fmt.Sprintf("%06d", n.Int64()+100000)
 }

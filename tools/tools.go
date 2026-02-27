@@ -96,8 +96,12 @@ var All = []*ToolDef{
 	KillProcess,
 	ClipboardGet,
 	ClipboardSet,
+	UpdateClaw,
+	RestartClaw,
+	KillClaw,
 
 	TGSendFile,
+	TGSendPhoto,
 	TGSendMessage,
 	TGSendMessageWithButtons,
 	SetBotDp,

@@ -2,9 +2,11 @@ package tools
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 var SystemInfo = &ToolDef{
@@ -215,5 +217,102 @@ var ClipboardSet = &ToolDef{
 			return fmt.Sprintf("Error setting clipboard: %v", err)
 		}
 		return fmt.Sprintf("Copied %d characters to clipboard", len(text))
+	},
+}
+
+var UpdateClaw = &ToolDef{
+	Name:        "update_claw",
+	Description: "Update ApexClaw. Uses git pull/build if in a git repo, otherwise tells you how to update. (owner only)",
+	Secure:      true,
+	Args:        []ToolArg{},
+	Execute: func(args map[string]string) string {
+		var sb strings.Builder
+		sb.WriteString("Update initiated...\n")
+
+		if _, err := os.Stat(".git"); err == nil {
+			sb.WriteString("Detected Git repository. Running git pull...\n")
+			cmdPull := exec.Command("git", "pull")
+			outPull, err := cmdPull.CombinedOutput()
+			sb.WriteString("Result: " + strings.TrimSpace(string(outPull)) + "\n")
+			if err != nil {
+				return sb.String() + "\nUpdate failed during git pull."
+			}
+
+			sb.WriteString("Rebuilding apexclaw...\n")
+			binName := "apexclaw"
+			if runtime.GOOS == "windows" {
+				binName = "apexclaw.exe"
+			}
+			cmdBuild := exec.Command("go", "build", "-o", binName, ".")
+			outBuild, err := cmdBuild.CombinedOutput()
+			if len(outBuild) > 0 {
+				sb.WriteString("Build Output: " + strings.TrimSpace(string(outBuild)) + "\n")
+			}
+			if err != nil {
+				return sb.String() + "\nBuild failed."
+			}
+
+			sb.WriteString("\nUpdate successful! Use restart_claw to reload.")
+		} else {
+			sb.WriteString("Not a git repository. Attempting binary update via curl one-liner...\n")
+			cmdUpdate := exec.Command("sh", "-c", "curl -fsSL https://claw.gogram.fun | bash")
+			if runtime.GOOS == "windows" {
+				cmdUpdate = exec.Command("cmd", "/C", "curl -fsSL https://claw.gogram.fun | bash")
+			}
+			out, err := cmdUpdate.CombinedOutput()
+			sb.WriteString("Result:\n" + strings.TrimSpace(string(out)) + "\n")
+			if err != nil {
+				return sb.String() + "\nUpdate failed."
+			}
+			sb.WriteString("\nBinary updated! Use restart_claw to reload.")
+		}
+
+		return sb.String()
+	},
+}
+
+var RestartClaw = &ToolDef{
+	Name:        "restart_claw",
+	Description: "Restarts the ApexClaw process (owner only)",
+	Secure:      true,
+	Args:        []ToolArg{},
+	Execute: func(args map[string]string) string {
+		binName := "./apexclaw"
+		if runtime.GOOS == "windows" {
+			binName = "apexclaw.exe"
+		}
+
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd", "/C", "start", binName)
+		} else {
+			cmd = exec.Command("sh", "-c", binName+" &")
+		}
+
+		err := cmd.Start()
+		if err != nil {
+			return fmt.Sprintf("Error starting new process: %v", err)
+		}
+
+		go func() {
+			time.Sleep(1 * time.Second)
+			os.Exit(0)
+		}()
+
+		return "Restarting ApexClaw... bot will be back in a moment."
+	},
+}
+
+var KillClaw = &ToolDef{
+	Name:        "kill_claw",
+	Description: "Immediately shuts down the ApexClaw process (owner only)",
+	Secure:      true,
+	Args:        []ToolArg{},
+	Execute: func(args map[string]string) string {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			os.Exit(0)
+		}()
+		return "Shutting down ApexClaw. Use your terminal or host manager to restart it."
 	},
 }

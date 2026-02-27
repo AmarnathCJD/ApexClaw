@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"log"
 	"os"
 	"strconv"
@@ -18,6 +20,10 @@ type Config struct {
 	TelegramBotToken string
 	OwnerID          string
 	MaxIterations    int
+
+	WebLoginCode  string
+	WebJWTSecret  string
+	WebFirstLogin bool
 }
 
 var Cfg = Config{
@@ -27,6 +33,9 @@ var Cfg = Config{
 	DefaultModel:     "GLM-4.7",
 	OwnerID:          "",
 	MaxIterations:    10,
+	WebLoginCode:     "123456",
+	WebJWTSecret:     "",
+	WebFirstLogin:    true,
 }
 
 func init() {
@@ -36,23 +45,12 @@ func init() {
 		log.Printf("[ENV] .env file not found")
 	}
 
-	requiredVars := []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_BOT_TOKEN", "OWNER_ID"}
-	needsSetup := false
-	for _, v := range requiredVars {
-		if os.Getenv(v) == "" {
-			needsSetup = true
-			break
-		}
+	// Offer setup wizard to user
+	if err := setup.InteractiveSetup(); err != nil {
+		log.Printf("[SETUP] %v", err)
 	}
-
-	if needsSetup {
-		log.Printf("[SETUP] Missing required configuration, launching setup wizard...")
-		if err := setup.InteractiveSetup(); err != nil {
-			log.Fatalf("[SETUP] Setup failed: %v", err)
-		}
-		if err := godotenv.Load(); err != nil {
-			log.Printf("[ENV] Error reloading .env: %v", err)
-		}
+	if err := godotenv.Load(); err != nil {
+		log.Printf("[ENV] Error reloading .env: %v", err)
 	}
 
 	apiIdStr := os.Getenv("TELEGRAM_API_ID")
@@ -69,4 +67,36 @@ func init() {
 			Cfg.MaxIterations = n
 		}
 	}
+
+	if code := os.Getenv("WEB_LOGIN_CODE"); code != "" {
+		Cfg.WebLoginCode = code
+	}
+	if secret := os.Getenv("WEB_JWT_SECRET"); secret != "" {
+		Cfg.WebJWTSecret = secret
+	} else {
+		Cfg.WebJWTSecret = generateJWTSecret()
+		envMap, _ := godotenv.Read()
+		if envMap == nil {
+			envMap = make(map[string]string)
+		}
+		envMap["WEB_JWT_SECRET"] = Cfg.WebJWTSecret
+		godotenv.Write(envMap, ".env")
+		log.Printf("[AUTH] Generated new JWT secret")
+	}
+
+	Cfg.WebFirstLogin = true
+	if firstLogin := os.Getenv("WEB_FIRST_LOGIN"); firstLogin == "false" {
+		Cfg.WebFirstLogin = false
+	}
+
+	log.Printf("[Web] Default login code: %s (WEB_FIRST_LOGIN=%v)", Cfg.WebLoginCode, Cfg.WebFirstLogin)
+}
+
+// generateJWTSecret creates a secure random JWT secret
+func generateJWTSecret() string {
+	b := make([]byte, 64)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("[AUTH] Failed to generate JWT secret: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }

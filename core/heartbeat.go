@@ -206,7 +206,7 @@ func fireHeartbeatTask(t ScheduledTask) {
 		ownerID = Cfg.OwnerID
 	}
 
-	session := NewAgentSession(GlobalRegistry, Cfg.DefaultModel)
+	session := NewAgentSession(GlobalRegistry, Cfg.DefaultModel, false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -233,15 +233,6 @@ func fireHeartbeatTask(t ScheduledTask) {
 		log.Printf("[HEARTBEAT] send error for task %q: %v", t.Label, err)
 	}
 }
-
-
-
-
-
-
-
-
-
 
 func ListHeartbeatTasks() string {
 	hbStore.mu.Lock()

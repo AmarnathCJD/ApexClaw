@@ -42,7 +42,6 @@ func (r *ToolRegistry) Register(t *ToolDef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[t.Name] = t
-	log.Printf("[TOOLS] registered: %s", t.Name)
 }
 
 func (r *ToolRegistry) Get(name string) (*ToolDef, bool) {
@@ -72,7 +71,7 @@ func (r *ToolRegistry) Names() []string {
 	return names
 }
 
-func buildSystemPrompt(reg *ToolRegistry) string {
+func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 	var sb strings.Builder
 	sb.WriteString(
 		"You are ApexClaw, a personal AI assistant running inside Telegram.\n\n" +
@@ -119,16 +118,34 @@ func buildSystemPrompt(reg *ToolRegistry) string {
 
 			"## Safety\n" +
 			"No independent goals. Confirm destructive actions before executing.\n" +
-			"Comply with stop/pause requests. Never bypass safeguards.\n\n" +
+			"Comply with stop/pause requests. Never bypass safeguards.\n\n",
+	)
 
+	if isWeb {
+		sb.WriteString(
+			"## Formatting & Outputs (CRITICAL)\n" +
+				"You are communicating via a modern Web UI with full Markdown support.\n" +
+				"ALWAYS use standard Markdown for formatting. Use triple backticks (```) for code blocks with the correct language tag. Use normal markdown headers, lists, **bold**, *italic*, etc.\n" +
+				"NEVER use Telegram HTML tags.\n\n" +
+				"IMPORTANT: There is NO length limit. You MUST output full, complete files or scripts WITHOUT ANY TRUNCATION. Do not omit sections.\n\n",
+		)
+	} else {
+		sb.WriteString(
 			"## Formatting (CRITICAL)\n" +
-			"You MUST use ONLY Telegram HTML tags for formatting.\n" +
-			"NEVER use markdown: no backticks (`), no asterisks (*), no underscores (_), no # headers, no ``` code blocks.\n" +
-			"Allowed HTML tags ONLY: <b>, <i>, <u>, <s>, <a href=\"\">, <br>, <pre>, <code>, <blockquote>, <spoiler>\n" +
-			"For code, use: <pre language=\"language_code_here\">your code here</pre>\n" +
-			"For inline code, use: <code>snippet</code> — never backticks.\n\n" +
+				"You MUST use ONLY Telegram HTML tags for formatting.\n" +
+				"NEVER use markdown: no backticks (`), no asterisks (*), no underscores (_), no # headers, no ``` code blocks.\n" +
+				"Allowed HTML tags ONLY: <b>, <i>, <u>, <s>, <a href=\"\">, <br>, <pre>, <code>, <blockquote>, <spoiler>\n" +
+				"For code, use: <pre language=\"language_code_here\">your code here</pre>\n" +
+				"For inline code, use: <code>snippet</code> — never backticks.\n\n" +
 
-			"## Telegram Buttons (CRITICAL)\n" +
+				"## Action Confirmation (CRITICAL)\n" +
+				"For critical / destructive actions (like executing commands, deleting files, etc), you MUST ask for confirmation via inline buttons BEFORE executing the tool, unless the user explicitly skips it.\n" +
+				"Use `tg_send_message_buttons` to show 'Confirm' (e.g., callback \"Confirm\") and 'Cancel' options. Do NOT execute the tool until they click confirm.\n\n",
+		)
+	}
+
+	sb.WriteString(
+		"## Telegram Buttons (CRITICAL)\n" +
 			"When user asks to send buttons with tg_send_message_buttons:\n" +
 			"The 'buttons' parameter MUST be base64-encoded JSON. Build JSON like this:\n" +
 			"{\"rows\":[{\"buttons\":[{\"text\":\"ButtonText\",\"type\":\"data\",\"data\":\"callback_data\",\"style\":\"success\"}]}]}\n" +
@@ -176,6 +193,7 @@ type AgentSession struct {
 	history  []model.Message
 	registry *ToolRegistry
 	model    string
+	isWeb    bool
 }
 
 func (s *AgentSession) trimHistory() {
@@ -187,12 +205,13 @@ func (s *AgentSession) trimHistory() {
 	s.history = append([]model.Message{s.history[0]}, keep...)
 }
 
-func NewAgentSession(registry *ToolRegistry, mdl string) *AgentSession {
-	sysPrompt := buildSystemPrompt(registry)
+func NewAgentSession(registry *ToolRegistry, mdl string, isWeb bool) *AgentSession {
+	sysPrompt := buildSystemPrompt(registry, isWeb)
 	return &AgentSession{
 		client:   model.New(),
 		registry: registry,
 		model:    mdl,
+		isWeb:    isWeb,
 		history:  []model.Message{{Role: "system", Content: sysPrompt}},
 	}
 }
@@ -313,7 +332,13 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 		s.mu.Unlock()
 
+		if onChunk != nil {
+			onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", funcName))
+		}
 		result := s.executeTool(funcName, argsJSON, senderID)
+		if onChunk != nil {
+			onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", funcName))
+		}
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
 		if isToolError(result) {
 			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
@@ -391,7 +416,13 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+	if onChunk != nil {
+		onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", funcName))
+	}
 	result := s.executeTool(funcName, argsJSON, senderID)
+	if onChunk != nil {
+		onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", funcName))
+	}
 	firstToolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
 	if isToolError(result) {
 		firstToolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
@@ -424,7 +455,13 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		log.Printf("[AGENT-STREAM] tool=%s", fn)
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "assistant", Content: r})
+		if onChunk != nil {
+			onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", fn))
+		}
 		res := s.executeTool(fn, aj, senderID)
+		if onChunk != nil {
+			onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", fn))
+		}
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res)
 		if isToolError(res) {
 			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", fn, res)
@@ -459,7 +496,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 func (s *AgentSession) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = []model.Message{{Role: "system", Content: buildSystemPrompt(s.registry)}}
+	s.history = []model.Message{{Role: "system", Content: buildSystemPrompt(s.registry, s.isWeb)}}
 	log.Printf("[AGENT] session reset")
 }
 
@@ -474,7 +511,7 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 	if !ok {
 		return fmt.Sprintf("unknown tool %q. Available: %s", name, strings.Join(s.registry.Names(), ", "))
 	}
-	if t.Secure && senderID != Cfg.OwnerID {
+	if t.Secure && senderID != Cfg.OwnerID && senderID != "web_"+Cfg.OwnerID {
 		log.Printf("[AGENT] access denied: user %q tried secure tool %q", senderID, name)
 		return fmt.Sprintf("Access denied: tool %q is restricted to the bot owner.", name)
 	}
@@ -527,7 +564,8 @@ func GetOrCreateAgentSession(key string) *AgentSession {
 	if ok {
 		return s
 	}
-	s = NewAgentSession(GlobalRegistry, Cfg.DefaultModel)
+	isWeb := strings.HasPrefix(key, "web_")
+	s = NewAgentSession(GlobalRegistry, Cfg.DefaultModel, isWeb)
 	agentSessions.Lock()
 	agentSessions.m[key] = s
 	agentSessions.Unlock()
