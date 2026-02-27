@@ -1,6 +1,10 @@
 package core
 
-import "apexclaw/tools"
+import (
+	"fmt"
+
+	"apexclaw/tools"
+)
 
 func GetTaskContext() map[string]any {
 	return nil
@@ -33,6 +37,33 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 			Execute:            t.Execute,
 			ExecuteWithContext: t.ExecuteWithContext,
 		})
+	}
+
+	tools.SetDeepWorkFn = func(senderID string, maxSteps int, plan string) string {
+		agentSessions.RLock()
+		var session *AgentSession
+		for key, s := range agentSessions.m {
+			if key == senderID || key == "web_"+senderID {
+				session = s
+				break
+			}
+		}
+		agentSessions.RUnlock()
+
+		if session == nil {
+			return "Error: session not found"
+		}
+		session.SetDeepWork(maxSteps, plan)
+		return fmt.Sprintf("Deep work activated! Plan: %s\nMax steps: %d\nYou now have extended iterations. Proceed with your plan.", plan, maxSteps)
+	}
+
+	tools.SendProgressFn = func(senderID string, status string) {
+		ctx := getTelegramContext(senderID)
+		if ctx != nil {
+			if chatID, ok := ctx["telegram_id"].(int64); ok {
+				TGSendMessage(fmt.Sprintf("%d", chatID), fmt.Sprintf("⏳ %s", status))
+			}
+		}
 	}
 
 	tools.GetTelegramContextFn = getTelegramContext

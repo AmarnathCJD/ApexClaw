@@ -17,9 +17,13 @@ type ToolArg struct {
 }
 
 var All = []*ToolDef{
-
 	Exec,
+	ExecChain,
+	EnsureCommand,
 	RunPython,
+
+	DeepWork,
+	Progress,
 
 	ReadFile,
 	WriteFile,
@@ -54,6 +58,13 @@ var All = []*ToolDef{
 	BrowserGetText,
 	BrowserEval,
 	BrowserScreenshot,
+	BrowserWait,
+	BrowserSelect,
+	BrowserScroll,
+	BrowserTabs,
+	BrowserCookies,
+	BrowserFormFill,
+	BrowserPDF,
 
 	GitHubSearch,
 	GitHubReadFile,
@@ -152,4 +163,10 @@ var All = []*ToolDef{
 	ReadDocument,
 	ListDocuments,
 	SummarizeDocument,
+
+	QRCodeGenerate,
+	URLShorten,
+	UUIDGenerate,
+	PasswordGenerate,
+	JokeFetch,
 }

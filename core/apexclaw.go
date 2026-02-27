@@ -118,7 +118,27 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 
 			"## Safety\n" +
 			"No independent goals. Confirm destructive actions before executing.\n" +
-			"Comply with stop/pause requests. Never bypass safeguards.\n\n",
+			"Comply with stop/pause requests. Never bypass safeguards.\n\n" +
+
+			"## Autonomous Task Execution\n" +
+			"You can execute complex, multi-step real-world tasks autonomously.\n\n" +
+			"For complex tasks (deploying, installing, browser workflows, ordering):\n" +
+			"1. Call deep_work FIRST with your plan and estimated steps\n" +
+			"2. Execute each step, checking results before proceeding\n" +
+			"3. Use progress to keep the user informed\n" +
+			"4. If something fails, adapt and try alternatives\n" +
+			"5. Deliver the final result with relevant URLs/confirmations\n\n" +
+			"### Common Patterns:\n" +
+			"- Deploy something: ensure_command → write files → exec/exec_chain → return URL\n" +
+			"- Browser workflow: browser_open → fill forms → submit → screenshot to verify → report\n" +
+			"- Install & configure: ensure_command → exec_chain for setup → verify working\n" +
+			"- Multi-step CLI: exec_chain with all commands in one call to save iterations\n\n" +
+			"### Error Recovery:\n" +
+			"- If a command fails, read the error and fix the issue\n" +
+			"- If a browser page doesn't load right, use browser_screenshot to see what's on screen\n" +
+			"- The browser has built-in stealth mode to avoid bot detection\n" +
+			"- Browser cookies persist across sessions for login flows\n" +
+			"- Always have a fallback approach\n\n",
 	)
 
 	if isWeb {
@@ -188,12 +208,15 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 const maxHistoryMessages = 60
 
 type AgentSession struct {
-	mu       sync.Mutex
-	client   *model.Client
-	history  []model.Message
-	registry *ToolRegistry
-	model    string
-	isWeb    bool
+	mu             sync.Mutex
+	client         *model.Client
+	history        []model.Message
+	registry       *ToolRegistry
+	model          string
+	isWeb          bool
+	deepWorkActive bool
+	deepWorkPlan   string
+	dynamicMaxIter int
 }
 
 func (s *AgentSession) trimHistory() {
@@ -203,6 +226,19 @@ func (s *AgentSession) trimHistory() {
 
 	keep := s.history[len(s.history)-(maxHistoryMessages-1):]
 	s.history = append([]model.Message{s.history[0]}, keep...)
+}
+
+func (s *AgentSession) maxIterations() int {
+	if s.dynamicMaxIter > 0 {
+		return s.dynamicMaxIter
+	}
+	return Cfg.MaxIterations
+}
+
+func (s *AgentSession) SetDeepWork(maxSteps int, plan string) {
+	s.deepWorkActive = true
+	s.deepWorkPlan = plan
+	s.dynamicMaxIter = maxSteps
 }
 
 func NewAgentSession(registry *ToolRegistry, mdl string, isWeb bool) *AgentSession {
@@ -224,7 +260,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 
 	var toolErrors []string
 
-	for i := range Cfg.MaxIterations {
+	for i := range s.maxIterations() {
 		reply, err := s.client.Send(ctx, s.model, s.history)
 		if err != nil {
 			if err == context.DeadlineExceeded {
@@ -296,7 +332,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 
 	var toolErrors []string
 
-	for i := range Cfg.MaxIterations {
+	for i := range s.maxIterations() {
 		s.mu.Lock()
 		history := make([]model.Message, len(s.history))
 		copy(history, s.history)
@@ -431,7 +467,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 	s.history = append(s.history, model.Message{Role: "user", Content: firstToolMsg})
 	s.mu.Unlock()
 
-	for range Cfg.MaxIterations {
+	for range s.maxIterations() {
 		s.mu.Lock()
 		history := make([]model.Message, len(s.history))
 		copy(history, s.history)

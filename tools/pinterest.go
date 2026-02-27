@@ -87,31 +87,88 @@ func extractImgURL(images map[string]any) string {
 var pwsInitialRe = regexp.MustCompile(`id="__PWS_INITIAL_STRING__"[^>]*>([^<]+)<`)
 
 func fetchPinterestImages(query string, lim int, offset int) ([]string, error) {
+	headers := map[string]string{
+		"Accept":                  "application/json, text/javascript, */*; q=0.01",
+		"Accept-Language":         "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,ml;q=0.6,bn;q=0.5",
+		"Cache-Control":           "no-cache",
+		"User-Agent":              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+		"X-App-Version":           "e5cf318",
+		"X-Pinterest-Appstate":    "active",
+		"X-Pinterest-Pws-Handler": "www/index.js",
+		"X-Pinterest-Source-Url":  "/",
+		"X-Requested-With":        "XMLHttpRequest",
+	}
 
-	searchURL := fmt.Sprintf("https://www.pinterest.com/search/pins/?q=%s&rs=typed", url.QueryEscape(query))
+	params := url.Values{}
+	params.Set("source_url", "/search/pins/?eq=World&etslf=67&len=2&q=world%20map&rs=ac")
+	params.Set("data", fmt.Sprintf(`{"options":{"query":"%s","redux_normalize_feed":true,"scope":"pins","source_url":"/search/pins/?eq=World&etslf=67&len=2&q=world%%20map&rs=ac"},"context":{}}`, query))
 
-	body, err := pinterestHTMLGet(searchURL)
+	baseURL := "https://in.pinterest.com/resource/BaseSearchResource/get/"
+	reqURL := baseURL + "?" + params.Encode()
+
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	html := string(body)
-
-	matches := pwsInitialRe.FindStringSubmatch(html)
-	if len(matches) < 2 {
-
-		return extractImgURLsFromHTML(html, lim, offset)
+	for key, value := range headers {
+		req.Header.Add(key, value)
 	}
 
-	jsonStr := matches[1]
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	jsonStr = strings.ReplaceAll(jsonStr, "&amp;", "&")
-	jsonStr = strings.ReplaceAll(jsonStr, "&#39;", "'")
-	jsonStr = strings.ReplaceAll(jsonStr, "&quot;", `"`)
-	jsonStr = strings.ReplaceAll(jsonStr, "&lt;", "<")
-	jsonStr = strings.ReplaceAll(jsonStr, "&gt;", ">")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
-	return extractImgURLsFromPWSJSON(jsonStr, lim, offset)
+	type ImageData struct {
+		Images struct {
+			Orig struct {
+				URL string `json:"url"`
+			} `json:"orig"`
+		} `json:"images"`
+	}
+	var parsedResponse struct {
+		ResourceResponse struct {
+			Data struct {
+				Results []ImageData `json:"results"`
+			} `json:"data"`
+		} `json:"resource_response"`
+	}
+
+	err = json.Unmarshal(body, &parsedResponse)
+	if err != nil {
+		return nil, err
+	}
+
+	var imageUrls []string
+	for _, result := range parsedResponse.ResourceResponse.Data.Results {
+		if result.Images.Orig.URL != "" {
+			imageUrls = append(imageUrls, result.Images.Orig.URL)
+		}
+	}
+
+	if len(imageUrls) > lim && offset == 0 {
+		imageUrls = imageUrls[:lim]
+	} else if len(imageUrls) > lim && offset > 0 {
+		offset = offset * lim
+		if offset > len(imageUrls) {
+			return nil, fmt.Errorf("no more images")
+		}
+		end := offset + lim
+		if end > len(imageUrls) {
+			end = len(imageUrls)
+		}
+		imageUrls = imageUrls[offset:end]
+	}
+
+	return imageUrls, nil
 }
 
 func extractImgURLsFromPWSJSON(jsonStr string, lim, offset int) ([]string, error) {
@@ -196,10 +253,7 @@ func extractImgURLsFromHTML(html string, lim, offset int) ([]string, error) {
 	if start >= len(urls) {
 		return nil, fmt.Errorf("no more results")
 	}
-	end := start + lim
-	if end > len(urls) {
-		end = len(urls)
-	}
+	end := min(start+lim, len(urls))
 	return urls[start:end], nil
 }
 
@@ -214,7 +268,6 @@ func downloadPinterestImage(imgURL string) (string, error) {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// Create temp file
 	tmpFile, err := os.CreateTemp("", "pinterest_*.jpg")
 	if err != nil {
 		return "", err

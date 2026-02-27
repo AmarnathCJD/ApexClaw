@@ -519,39 +519,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func humanToolAction(toolName string) string {
-	switch toolName {
-	case "web_search", "github_search", "youtube_search", "imdb_search", "tvmaze_search":
-		return "Searching the web"
-	case "web_fetch", "read_document", "read_email", "wikipedia":
-		return "Reading information"
-	case "exec", "run_python":
-		return "Thinking"
-	case "read_file":
-		return "Reading file"
-	case "write_file", "append_file", "delete_file", "move_file", "create_dir":
-		return "Modifying files"
-	case "list_dir", "search_files":
-		return "Looking through files"
-	case "tg_get_profile_photos":
-		return "Checking profile photos"
-	case "tg_send_file", "tg_send_message", "tg_send_message_buttons":
-		return "Sending message"
-	case "tg_download", "download_ytdlp", "download_aria2c":
-		return "Downloading media"
-	case "tg_get_chat_info", "tg_get_members", "tg_get_message":
-		return "Checking chat details"
-	case "weather":
-		return "Checking the weather"
-	case "system_info", "process_list", "cron_status":
-		return "Checking system status"
-	case "schedule_task", "timer":
-		return "Setting up a task"
-	}
-	name := strings.ReplaceAll(toolName, "_", " ")
-	return "Using " + name
-}
-
 func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
@@ -572,13 +539,8 @@ func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string
 
 func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64) (func(string), func()) {
 	var buf strings.Builder
-	var statusMsgID int32
 
 	flush := func() {
-		if statusMsgID > 0 {
-			b.client.DeleteMessages(chatID, []int32{statusMsgID})
-			statusMsgID = -1
-		}
 		if buf.Len() == 0 {
 			return
 		}
@@ -587,35 +549,8 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64) (func(s
 	}
 
 	onChunk := func(chunk string) {
-		if strings.HasPrefix(chunk, "__TOOL_CALL:") {
+		if strings.HasPrefix(chunk, "__TOOL_CALL:") || strings.HasPrefix(chunk, "__TOOL_RESULT:") {
 			return
-		}
-		if strings.HasPrefix(chunk, "__TOOL_RESULT:") {
-			toolName := strings.TrimPrefix(chunk, "__TOOL_RESULT:")
-			toolName = strings.TrimSuffix(toolName, "__\n")
-
-			action := humanToolAction(toolName)
-			text := fmt.Sprintf("⏳ <i>%s...</i>", action)
-
-			if statusMsgID == 0 {
-				opts := &telegram.SendOptions{ParseMode: telegram.HTML}
-				if replyToMsgID > 0 {
-					opts.ReplyID = int32(replyToMsgID)
-				}
-				if sent, err := b.client.SendMessage(chatID, text, opts); err == nil && sent != nil {
-					statusMsgID = sent.ID
-				} else {
-					statusMsgID = -1
-				}
-			} else if statusMsgID > 0 {
-				b.client.EditMessage(chatID, statusMsgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
-			}
-			return
-		}
-
-		if statusMsgID > 0 {
-			b.client.DeleteMessages(chatID, []int32{statusMsgID})
-			statusMsgID = -1
 		}
 
 		buf.WriteString(chunk)
