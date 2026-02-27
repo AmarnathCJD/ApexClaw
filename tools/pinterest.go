@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -202,6 +203,33 @@ func extractImgURLsFromHTML(html string, lim, offset int) ([]string, error) {
 	return urls[start:end], nil
 }
 
+func downloadPinterestImage(imgURL string) (string, error) {
+	resp, err := http.Get(imgURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "pinterest_*.jpg")
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close()
+
+	_, err = io.Copy(tmpFile, resp.Body)
+	if err != nil {
+		os.Remove(tmpFile.Name())
+		return "", err
+	}
+
+	return tmpFile.Name(), nil
+}
+
 func formatPin(pin map[string]any) string {
 	id, _ := pin["id"].(string)
 	desc := ""
@@ -296,8 +324,7 @@ var PinterestSearch = &ToolDef{
 			}
 		}
 
-		if chatID == 0 || SendTGAlbumURLsFn == nil {
-
+		if chatID == 0 || SendTGFileFn == nil {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Pinterest: %q — %d images\n\n", query, len(urls)))
 			for i, u := range urls {
@@ -306,20 +333,28 @@ var PinterestSearch = &ToolDef{
 			return strings.TrimSpace(sb.String())
 		}
 
-		const albumSize = 10
+		// Download images locally, upload to TG, then delete
+		caption := fmt.Sprintf("📌 Pinterest: %q", query)
 		sent := 0
 		var errs []string
-		for i := 0; i < len(urls); i += albumSize {
-			end := i + albumSize
-			if end > len(urls) {
-				end = len(urls)
+
+		for _, imgURL := range urls {
+			localPath, err := downloadPinterestImage(imgURL)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("Failed to download %s: %v", imgURL, err))
+				continue
 			}
-			batch := urls[i:end]
-			caption := fmt.Sprintf("📌 Pinterest: %q", query)
-			if result := SendTGAlbumURLsFn(chatID, batch, caption); result != "" {
+
+			// Upload to Telegram
+			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption)
+
+			// Delete local file
+			_ = os.Remove(localPath)
+
+			if result != "" {
 				errs = append(errs, result)
 			} else {
-				sent += len(batch)
+				sent++
 			}
 		}
 
@@ -408,8 +443,20 @@ var PinterestGetPin = &ToolDef{
 			}
 		}
 
-		if imgURL != "" && chatID != 0 && SendTGPhotoURLFn != nil {
-			if result := SendTGPhotoURLFn(chatID, imgURL, caption); result != "" {
+		if imgURL != "" && chatID != 0 && SendTGFileFn != nil {
+			// Download image locally, upload to TG, then delete
+			localPath, err := downloadPinterestImage(imgURL)
+			if err != nil {
+				return fmt.Sprintf("Fetched pin %s but failed to download image: %v\nURL: %s", pinID, err, imgURL)
+			}
+
+			// Upload to Telegram
+			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption)
+
+			// Delete local file
+			_ = os.Remove(localPath)
+
+			if result != "" {
 				return fmt.Sprintf("Fetched pin but failed to send image: %s\nURL: %s", result, imgURL)
 			}
 			return fmt.Sprintf("Sent pin %s image to chat", pinID)

@@ -495,17 +495,3 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func TGSendMessageWithButtons(chatID int64, text string, kb *telegram.ReplyInlineMarkup) string {
-	if heartbeatTGClient == nil {
-		return "Error: Telegram client not initialized"
-	}
-
-	_, err := heartbeatTGClient.SendMessage(chatID, text, &telegram.SendOptions{
-		ReplyMarkup: kb,
-	})
-	if err != nil {
-		return fmt.Sprintf("Error sending message: %v", err)
-	}
-
-	return fmt.Sprintf("Message sent to %d", chatID)
-}

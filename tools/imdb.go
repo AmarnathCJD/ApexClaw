@@ -521,7 +521,7 @@ var PatBinGet = &ToolDef{
 }
 
 func pbCreatePaste(content, language, expiresIn string, burnAfterRead bool) (*PatBinPaste, error) {
-	payload := fmt.Sprintf(`{"content":%q,"title":"","language":"%s","is_public":true}`, content, language)
+	payload := fmt.Sprintf(`{"content":%q,"title":"","language":"%s","is_public":true,"expires_in":"%s","burn_after_read":%t}`, content, language, expiresIn, burnAfterRead)
 
 	req, err := http.NewRequest("POST", "https://patbin.fun/api/paste", bytes.NewBufferString(payload))
 	if err != nil {

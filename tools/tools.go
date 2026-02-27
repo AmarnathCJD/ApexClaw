@@ -99,14 +99,22 @@ var All = []*ToolDef{
 
 	TGSendFile,
 	TGSendMessage,
+	TGSendMessageWithButtons,
+	SetBotDp,
 	TGDownload,
-	TGGetChatInfo,
 	TGForwardMsg,
 	TGDeleteMsg,
 	TGPinMsg,
-	SetBotDp,
+	TGUnpinMsg,
+	TGGetChatInfo,
 	TGReact,
 	TGGetReply,
+	TGGetMembers,
+	TGBroadcast,
+	TGGetMessage,
+	TGEditMessage,
+	TGCreateInvite,
+	TGGetProfilePhotos,
 
 	StockPrice,
 
@@ -137,8 +145,6 @@ var All = []*ToolDef{
 
 	DownloadYtdlp,
 	DownloadAria2c,
-
-	TGSendMessageWithButtons,
 	ReadDocument,
 	ListDocuments,
 	SummarizeDocument,

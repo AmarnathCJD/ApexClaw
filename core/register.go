@@ -36,20 +36,30 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 		})
 	}
 
+	// === Telegram Function Pointer Wiring ===
+	// All now accept peer strings (IDs, usernames) - core handles ResolvePeer
 	tools.GetTelegramContextFn = getTelegramContext
 	tools.SendTGFileFn = TGSendFile
 	tools.SendTGMsgFn = TGSendMessage
-	tools.TGDownloadMediaFn = TGDownloadMedia
-	tools.TGGetChatInfoFn = func(peer string) string { return TGGetChatInfo(peer) }
-	tools.TGForwardMsgFn = TGForwardMsg
-	tools.TGDeleteMsgFn = TGDeleteMsg
-	tools.TGPinMsgFn = TGPinMsg
 	tools.SendTGPhotoURLFn = TGSendPhotoURL
 	tools.SendTGAlbumURLsFn = TGSendAlbumURLs
 	tools.SetBotDpFn = TGSetBotDp
+	tools.TGDownloadMediaFn = TGDownloadMedia
+	tools.TGGetChatInfoFn = TGGetChatInfo
+	tools.TGResolvePeerFn = TGResolvePeer
+	tools.TGForwardMsgFn = TGForwardMsg
+	tools.TGDeleteMsgFn = TGDeleteMsg
+	tools.TGPinMsgFn = TGPinMsg
+	tools.TGUnpinMsgFn = TGUnpinMsg
 	tools.TGReactFn = TGReact
 	tools.TGGetReplyFn = TGGetReply
+	tools.TGGetMembersFn = TGGetMembers
+	tools.TGBroadcastFn = TGBroadcast
+	tools.TGGetMessageFn = TGGetMessage
+	tools.TGEditMessageFn = TGEditMessage
 	tools.SendTGMessageWithButtonsFn = TGSendMessageWithButtons
+	tools.TGCreateInviteFn = TGCreateInvite
+	tools.TGGetProfilePhotosFn = TGGetProfilePhotos
 }
 
 func bridgeArgs(args []tools.ToolArg) []ToolArg {
