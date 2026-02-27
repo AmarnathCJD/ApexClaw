@@ -605,7 +605,12 @@ func TGCreateInvite(peer string, expireDate int32, memberLimit int32) string {
 	if err != nil {
 		return fmt.Sprintf("Error creating invite: %v", err)
 	}
-	return inv.Link
+	switch i := inv.(type) {
+	case *telegram.ChatInviteExported:
+		return i.Link
+	default:
+		return "Error: invalid invite type"
+	}
 }
 
 // TGGetProfilePhotos gets profile photos of a user
