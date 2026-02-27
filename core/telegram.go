@@ -177,7 +177,6 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		"message_id":  int64(m.ID),
 	}
 	if m.ChatID() < 0 {
-
 		tgCtx["group_id"] = m.ChatID()
 	}
 	if m.IsReply() {
@@ -494,4 +493,3 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
-

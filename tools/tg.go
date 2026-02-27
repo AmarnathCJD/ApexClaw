@@ -338,11 +338,11 @@ var TGDeleteMsg = &ToolDef{
 
 var TGPinMsg = &ToolDef{
 	Name:        "tg_pin_msg",
-	Description: "Pin a message in a chat. Supports chat IDs and @usernames.",
+	Description: "Pin a message in a chat. Supports chat IDs and @usernames. If no chat_id provided, uses current chat. If no message_id provided, pins the replied-to message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username", Required: true},
-		{Name: "message_id", Description: "Message ID to pin", Required: true},
+		{Name: "chat_id", Description: "Chat ID or @username (optional, defaults to current chat)", Required: false},
+		{Name: "message_id", Description: "Message ID to pin (optional, defaults to replied-to message)", Required: false},
 		{Name: "silent", Description: "Pin silently without notifying (true/false, default false)", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, userID string) string {
@@ -350,47 +350,101 @@ var TGPinMsg = &ToolDef{
 		msgStr := strings.TrimSpace(args["message_id"])
 		silent := strings.EqualFold(strings.TrimSpace(args["silent"]), "true")
 
-		if chatStr == "" || msgStr == "" {
-			return "Error: chat_id and message_id are required"
+		var msgID int32
+		var finalChatStr string
+
+		if GetTelegramContextFn == nil {
+			return "Error: Telegram context not initialized"
+		}
+		ctx := GetTelegramContextFn(userID)
+		if ctx == nil {
+			return "Error: no Telegram context"
 		}
 
-		var msgID int32
-		if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
-			return fmt.Sprintf("Error: message_id must be numeric. Got: %q", msgStr)
+		if chatStr == "" {
+			if v, ok := ctx["group_id"]; ok {
+				finalChatStr = fmt.Sprintf("%d", v.(int64))
+			} else if v, ok := ctx["telegram_id"]; ok {
+				finalChatStr = fmt.Sprintf("%d", v.(int64))
+			}
+		} else {
+			finalChatStr = chatStr
+		}
+
+		if finalChatStr == "" {
+			return "Error: chat_id not specified and no current chat context"
+		}
+
+		if msgStr == "" {
+			if replyMsgVal, hasReply := ctx["reply_to_msg_id"]; hasReply {
+				msgID = int32(replyMsgVal.(int64))
+			} else {
+				return "Error: message_id not specified and not replying to any message"
+			}
+		} else {
+			if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
+				return fmt.Sprintf("Error: message_id must be numeric. Got: %q", msgStr)
+			}
 		}
 
 		if TGPinMsgFn == nil {
 			return "Error: Telegram pin not initialized"
 		}
-		return TGPinMsgFn(chatStr, msgID, silent)
+		return TGPinMsgFn(finalChatStr, msgID, silent)
 	},
 }
 
 var TGUnpinMsg = &ToolDef{
 	Name:        "tg_unpin_msg",
-	Description: "Unpin a message from a chat. Supports chat IDs and @usernames.",
+	Description: "Unpin a message from a chat. Supports chat IDs and @usernames. If no chat_id provided, uses current chat. If no message_id provided, unpins the replied-to message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username", Required: true},
-		{Name: "message_id", Description: "Message ID to unpin", Required: true},
+		{Name: "chat_id", Description: "Chat ID or @username (optional, defaults to current chat)", Required: false},
+		{Name: "message_id", Description: "Message ID to unpin (optional, defaults to replied-to message)", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, userID string) string {
 		chatStr := strings.TrimSpace(args["chat_id"])
 		msgStr := strings.TrimSpace(args["message_id"])
 
-		if chatStr == "" || msgStr == "" {
-			return "Error: chat_id and message_id are required"
+		var msgID int32
+		var finalChatStr string
+
+		if GetTelegramContextFn == nil {
+			return "Error: Telegram context not initialized"
+		}
+		ctx := GetTelegramContextFn(userID)
+		if ctx == nil {
+			return "Error: no Telegram context"
 		}
 
-		var msgID int32
-		if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
-			return fmt.Sprintf("Error: message_id must be numeric. Got: %q", msgStr)
+		if chatStr == "" {
+			if v, ok := ctx["telegram_id"]; ok {
+				finalChatStr = fmt.Sprintf("%d", v.(int64))
+			}
+		} else {
+			finalChatStr = chatStr
+		}
+
+		if finalChatStr == "" {
+			return "Error: chat_id not specified and no current chat context"
+		}
+
+		if msgStr == "" {
+			if replyMsgVal, hasReply := ctx["reply_to_msg_id"]; hasReply {
+				msgID = int32(replyMsgVal.(int64))
+			} else {
+				return "Error: message_id not specified and not replying to any message"
+			}
+		} else {
+			if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
+				return fmt.Sprintf("Error: message_id must be numeric. Got: %q", msgStr)
+			}
 		}
 
 		if TGUnpinMsgFn == nil {
 			return "Error: Telegram unpin not initialized"
 		}
-		return TGUnpinMsgFn(chatStr, msgID)
+		return TGUnpinMsgFn(finalChatStr, msgID)
 	},
 }
 

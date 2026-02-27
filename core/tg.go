@@ -181,7 +181,7 @@ func TGDownloadMedia(peer string, messageID int32, savePath string) (string, err
 		return "", fmt.Errorf("Telegram client not ready")
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return "", fmt.Errorf("error resolving peer: %w", err)
 	}
@@ -301,37 +301,18 @@ func formatTGPeer(peer any, label string) string {
 	}
 }
 
-// Helper: Convert peer string and get chatID int64
-func resolvePeerToChatID(peer string) (int64, error) {
-	resolvedPeer, err := TGResolvePeer(peer)
-	if err != nil {
-		return 0, err
-	}
-
-	switch p := resolvedPeer.(type) {
-	case *telegram.UserObj:
-		return p.ID, nil
-	case *telegram.ChatObj:
-		return p.ID, nil
-	case *telegram.Channel:
-		return p.ID, nil
-	}
-
-	return 0, fmt.Errorf("unsupported peer type")
-}
-
 // TGForwardMsg forwards a message from one chat to another
 func TGForwardMsg(fromPeer string, msgID int32, toPeer string) string {
 	if heartbeatTGClient == nil {
 		return "Error: Telegram client not ready"
 	}
 
-	fromID, err := resolvePeerToChatID(fromPeer)
+	fromID, err := heartbeatTGClient.ResolvePeer(fromPeer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving source: %v", err)
 	}
 
-	toID, err := resolvePeerToChatID(toPeer)
+	toID, err := heartbeatTGClient.ResolvePeer(toPeer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving destination: %v", err)
 	}
@@ -349,7 +330,7 @@ func TGDeleteMsg(peer string, msgIDs []int32) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -367,7 +348,7 @@ func TGPinMsg(peer string, msgID int32, silent bool) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -385,7 +366,7 @@ func TGUnpinMsg(peer string, msgID int32) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -403,7 +384,7 @@ func TGReact(peer string, msgID int32, emoji string) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -420,7 +401,7 @@ func TGGetReply(peer string, msgID int32) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -463,7 +444,7 @@ func TGGetMembers(peer string, limit int) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -516,7 +497,7 @@ func TGBroadcast(peers []string, text string) string {
 
 	var successful, failed int
 	for _, peer := range peers {
-		chatID, err := resolvePeerToChatID(peer)
+		chatID, err := heartbeatTGClient.ResolvePeer(peer)
 		if err != nil {
 			log.Printf("[TG] broadcast error for %q: %v", peer, err)
 			failed++
@@ -539,7 +520,7 @@ func TGGetMessage(peer string, msgID int32) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -581,7 +562,7 @@ func TGEditMessage(peer string, msgID int32, newText string) string {
 		return "Error: Telegram client not ready"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -599,7 +580,7 @@ func TGSendMessageWithButtons(peer string, text string, kb *telegram.ReplyInline
 		return "Error: Telegram client not initialized"
 	}
 
-	chatID, err := resolvePeerToChatID(peer)
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
@@ -620,8 +601,11 @@ func TGCreateInvite(peer string, expireDate int32, memberLimit int32) string {
 		return "Error: Telegram client not ready"
 	}
 
-	// Placeholder - feature pending gogram API support
-	return fmt.Sprintf("Invite link creation: feature pending implementation for peer %s", peer)
+	inv, err := heartbeatTGClient.ExportInvite(peer)
+	if err != nil {
+		return fmt.Sprintf("Error creating invite: %v", err)
+	}
+	return inv.Link
 }
 
 // TGGetProfilePhotos gets profile photos of a user
@@ -630,7 +614,7 @@ func TGGetProfilePhotos(peer string, limit int) string {
 		return "Error: Telegram client not ready"
 	}
 
-	userID, err := resolvePeerToChatID(peer)
+	userID, err := heartbeatTGClient.ResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
