@@ -363,19 +363,15 @@ var TGForwardMsg = &ToolDef{
 
 var TGDeleteMsg = &ToolDef{
 	Name:        "tg_delete_msg",
-	Description: "Delete one or more messages from a chat. Supports chat IDs and @usernames. Omit chat_id to use current chat.",
-	Secure:      true,
+	Description: "Delete one or more messages from a chat. Supports chat IDs and @usernames. Omit chat_id to use current chat. Omit message_ids to delete replied-to message.",
+	Secure:      false,
 	Args: []ToolArg{
 		{Name: "chat_id", Description: "Chat ID or @username (optional, Omit for current chat)", Required: false},
-		{Name: "message_ids", Description: "Message IDs to delete, comma-separated (e.g. '123' or '123,124,125')", Required: true},
+		{Name: "message_ids", Description: "Message IDs to delete, comma-separated (e.g. '123' or '123,124,125'). Omit to delete replied-to message.", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, userID string) string {
 		chatStr := strings.TrimSpace(args["chat_id"])
 		msgStr := strings.TrimSpace(args["message_ids"])
-
-		if msgStr == "" {
-			return "Error: message_ids are required"
-		}
 
 		chatStr = resolveContextPeer(chatStr, userID)
 		if chatStr == "" {
@@ -383,17 +379,29 @@ var TGDeleteMsg = &ToolDef{
 		}
 
 		var msgIDs []int32
-		for _, part := range strings.Split(msgStr, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
+
+		// If message_ids not provided, try to use replied-to message
+		if msgStr == "" {
+			msgID := resolveContextMessageID("", userID)
+			if msgID == 0 {
+				return "Error: message_ids not specified and no replied-to message context"
 			}
-			var id int32
-			if _, err := fmt.Sscanf(part, "%d", &id); err != nil {
-				return fmt.Sprintf("Error: invalid message_id %q", part)
+			msgIDs = append(msgIDs, msgID)
+		} else {
+			// Parse provided message IDs
+			for _, part := range strings.Split(msgStr, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				var id int32
+				if _, err := fmt.Sscanf(part, "%d", &id); err != nil {
+					return fmt.Sprintf("Error: invalid message_id %q", part)
+				}
+				msgIDs = append(msgIDs, id)
 			}
-			msgIDs = append(msgIDs, id)
 		}
+
 		if len(msgIDs) == 0 {
 			return "Error: no valid message IDs provided"
 		}

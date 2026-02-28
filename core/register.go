@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strings"
 
 	"apexclaw/tools"
 )
@@ -57,13 +58,51 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 		return fmt.Sprintf("Deep work activated! Plan: %s\nMax steps: %d\nYou now have extended iterations. Proceed with your plan.", plan, maxSteps)
 	}
 
-	tools.SendProgressFn = func(senderID string, status string) {
+	tools.SendProgressFn = func(senderID string, percent int, message string, state string, detail string) (int64, error) {
+		stateEmojis := map[string]string{
+			"running": "⏳",
+			"success": "✓",
+			"failure": "✗",
+			"retry":   "↻",
+		}
+
+		emoji := stateEmojis[state]
+		if emoji == "" {
+			emoji = "•"
+		}
+
+		agentSessions.RLock()
+		var session *AgentSession
+		for key, s := range agentSessions.m {
+			if key == senderID || key == "web_"+senderID {
+				session = s
+				break
+			}
+		}
+		agentSessions.RUnlock()
+
+		if session != nil && session.streamCallback != nil {
+			progressJSON := fmt.Sprintf(`{"message":"%s","percent":%d,"state":"%s","detail":"%s"}`,
+				escapeJSON(message), percent, state, escapeJSON(detail))
+			session.streamCallback(fmt.Sprintf("\x00PROGRESS:%s\x00", progressJSON))
+		}
+
 		ctx := getTelegramContext(senderID)
 		if ctx != nil {
 			if chatID, ok := ctx["telegram_id"].(int64); ok {
-				TGSendMessage(fmt.Sprintf("%d", chatID), fmt.Sprintf("⏳ %s", status))
+				var text strings.Builder
+				fmt.Fprintf(&text, "%s %s", emoji, message)
+				if detail != "" && detail != "(no output)" {
+					lines := splitLines(detail, 4)
+					for _, line := range lines {
+						fmt.Fprintf(&text, "\n> %s", line)
+					}
+				}
+				_ = TGSendMessage(fmt.Sprintf("%d", chatID), text.String())
 			}
 		}
+
+		return 0, nil
 	}
 
 	tools.GetTelegramContextFn = getTelegramContext
@@ -101,4 +140,59 @@ func bridgeArgs(args []tools.ToolArg) []ToolArg {
 		}
 	}
 	return out
+}
+
+func repeatStr(s string, n int) string {
+	var result strings.Builder
+	for range n {
+		result.WriteString(s)
+	}
+	return result.String()
+}
+
+func escapeJSON(s string) string {
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	var result strings.Builder
+	for _, c := range s {
+		switch c {
+		case '"':
+			result.WriteString(`\"`)
+		case '\\':
+			result.WriteString(`\\`)
+		case '\n':
+			result.WriteString(`\n`)
+		case '\r':
+			result.WriteString(`\r`)
+		case '\t':
+			result.WriteString(`\t`)
+		default:
+			result.WriteString(string(c))
+		}
+	}
+	return result.String()
+}
+
+func splitLines(text string, maxLines int) []string {
+	var lines []string
+	current := ""
+	maxLen := 60
+
+	for _, char := range text {
+		if len(current) >= maxLen {
+			lines = append(lines, current)
+			current = ""
+			if len(lines) >= maxLines {
+				break
+			}
+		}
+		current += string(char)
+	}
+
+	if current != "" && len(lines) < maxLines {
+		lines = append(lines, current)
+	}
+
+	return lines
 }

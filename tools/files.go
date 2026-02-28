@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,8 @@ var WriteFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		content = html.UnescapeString(content)
+
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return fmt.Sprintf("Error creating directories: %v", err)
 		}
@@ -69,6 +72,8 @@ var AppendFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		content = html.UnescapeString(content)
+
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)

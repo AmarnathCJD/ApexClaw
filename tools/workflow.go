@@ -7,7 +7,7 @@ import (
 
 // Function pointers wired by core/register.go
 var SetDeepWorkFn func(senderID string, maxSteps int, plan string) string
-var SendProgressFn func(senderID string, status string)
+var SendProgressFn func(senderID string, percent int, message string, state string, detail string) (int64, error)
 
 var DeepWork = &ToolDef{
 	Name:        "deep_work",
@@ -45,26 +45,51 @@ var DeepWork = &ToolDef{
 
 var Progress = &ToolDef{
 	Name:        "progress",
-	Description: "Report progress on a multi-step task to the user in real-time. Use during deep_work to keep them informed.",
+	Description: "Report progress on a multi-step task with rich updates. States: 'running', 'success', 'failure', 'retry'. Updates both Telegram and WebUI in real-time.",
 	Args: []ToolArg{
-		{Name: "status", Description: "Current status message (e.g. 'Step 2/5: Installing Vercel CLI...')", Required: true},
-		{Name: "percent", Description: "Estimated completion percentage 0-100 (optional)", Required: false},
+		{Name: "message", Description: "Main status message (e.g. 'Vercel CLI installation')", Required: true},
+		{Name: "percent", Description: "Completion percentage 0-100 (optional)", Required: false},
+		{Name: "state", Description: "Status: 'running', 'success', 'failure', 'retry' (optional, default: 'running')", Required: false},
+		{Name: "detail", Description: "Detailed output/error message (optional)", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, senderID string) string {
-		status := args["status"]
-		if status == "" {
-			return "Error: status is required"
+		message := args["message"]
+		if message == "" {
+			return "Error: message is required"
 		}
 
-		if percent := args["percent"]; percent != "" {
-			status = fmt.Sprintf("[%s%%] %s", percent, status)
+		percent := 0
+		if p := args["percent"]; p != "" {
+			fmt.Sscanf(p, "%d", &percent)
 		}
+		if percent < 0 {
+			percent = 0
+		}
+		if percent > 100 {
+			percent = 100
+		}
+
+		state := args["state"]
+		if state == "" {
+			state = "running"
+		}
+		switch state {
+		case "running", "success", "failure", "retry":
+		default:
+			state = "running"
+		}
+
+		detail := args["detail"]
 
 		if SendProgressFn != nil {
-			SendProgressFn(senderID, status)
+			msgID, err := SendProgressFn(senderID, percent, message, state, detail)
+			if err == nil {
+				log.Printf("[PROGRESS] %s [%d%%] %s (state=%s, tg_msg=%d)", senderID, percent, message, state, msgID)
+				return ""
+			}
+			log.Printf("[PROGRESS] %s: send failed: %v", senderID, err)
 		}
 
-		log.Printf("[PROGRESS] %s: %s", senderID, status)
-		return fmt.Sprintf("Progress reported: %s", status)
+		return ""
 	},
 }

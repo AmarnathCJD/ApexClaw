@@ -133,12 +133,20 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 			"- Browser workflow: browser_open → fill forms → submit → screenshot to verify → report\n" +
 			"- Install & configure: ensure_command → exec_chain for setup → verify working\n" +
 			"- Multi-step CLI: exec_chain with all commands in one call to save iterations\n\n" +
-			"### Error Recovery:\n" +
-			"- If a command fails, read the error and fix the issue\n" +
-			"- If a browser page doesn't load right, use browser_screenshot to see what's on screen\n" +
-			"- The browser has built-in stealth mode to avoid bot detection\n" +
-			"- Browser cookies persist across sessions for login flows\n" +
-			"- Always have a fallback approach\n\n",
+			"### Error Recovery (AUTO-FIX MODE):\n" +
+			"When something fails, DON'T report the error back to the user. Instead:\n" +
+			"1. Analyze what went wrong\n" +
+			"2. Auto-fix it immediately (delete bad files, regenerate config, try alternative approach)\n" +
+			"3. Retry the operation\n" +
+			"4. Only report success or if genuinely unrecoverable after 2+ fix attempts\n\n" +
+			"Examples of auto-fixes:\n" +
+			"- Bad JSON config → delete it, let system auto-detect, retry deploy\n" +
+			"- Missing dependency → install it, continue\n" +
+			"- Wrong file path → check correct path, read it, proceed\n" +
+			"- Auth failed → check credentials, refresh token, retry\n" +
+			"- Browser doesn't load → take screenshot to see issue, adjust approach\n\n" +
+			"Only surface issues to user if: (a) manual input needed, (b) requires user decision, or (c) genuinely impossible.\n" +
+			"Otherwise: silently fix and proceed.\n\n",
 	)
 
 	if isWeb {
@@ -217,6 +225,7 @@ type AgentSession struct {
 	deepWorkActive bool
 	deepWorkPlan   string
 	dynamicMaxIter int
+	streamCallback func(string)
 }
 
 func (s *AgentSession) trimHistory() {
@@ -328,6 +337,7 @@ func timestampedMessage(text string) string {
 func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string, onChunk func(string)) (string, error) {
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
+	s.streamCallback = onChunk
 	s.mu.Unlock()
 
 	var toolErrors []string

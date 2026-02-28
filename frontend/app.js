@@ -308,6 +308,43 @@ document.addEventListener('DOMContentLoaded', () => {
         return msgDiv;
     }
 
+    function updateProgressBlock(container, data) {
+        const blockId = `progress-${data.step || 'main'}`;
+        let block = container.querySelector(`#${blockId}`);
+
+        if (!block) {
+            block = document.createElement('div');
+            block.id = blockId;
+            block.className = 'progress-block';
+            container.appendChild(block);
+        }
+
+        const stateMap = {
+            'running': '⏳',
+            'success': '✓',
+            'failure': '✗',
+            'retry': '↻'
+        };
+
+        const state = data.state || 'running';
+        const emoji = stateMap[state] || '•';
+        const progressBar = data.percent !== undefined ?
+            `[${Math.floor(data.percent / 10).toString().padEnd(10, '█')}${(10 - Math.floor(data.percent / 10)).toString().padEnd(data.percent % 10 ? 1 : 0, '░')}] ${data.percent}%` :
+            '';
+
+        let html = `<div class="progress-header">${emoji} ${data.message}`;
+        if (progressBar) html += `<div class="progress-bar">${progressBar}</div>`;
+        html += `</div>`;
+
+        if (data.detail && data.detail !== '(no output)') {
+            html += `<pre class="progress-detail">${data.detail.substring(0, 500)}</pre>`;
+        }
+
+        block.innerHTML = html;
+        block.className = `progress-block state-${state}`;
+        scrollToBottom();
+    }
+
     function insertToolBlock(container, toolName) {
         const block = document.createElement('div');
         block.className = `tool-block running tool-${toolName}`;
@@ -408,7 +445,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         try {
                             const data = JSON.parse(dataStr);
 
-                            if (data.type === 'tool_call') {
+                            if (data.type === 'progress') {
+                                updateProgressBlock(content, data);
+                            } else if (data.type === 'tool_call') {
                                 insertToolBlock(content, data.name);
                             } else if (data.type === 'tool_result') {
                                 finishToolBlock(content, data.name);

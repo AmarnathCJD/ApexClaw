@@ -204,7 +204,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Validate and parse JWT
 		claims := &model.JWTClaims{}
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
@@ -267,16 +267,28 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		if chunk == "" {
 			return
 		}
-		if strings.HasPrefix(chunk, "__TOOL_CALL:") {
-			toolName := strings.TrimPrefix(chunk, "__TOOL_CALL:")
+		if after, ok0 := strings.CutPrefix(chunk, "\x00PROGRESS:"); ok0 {
+			content := after
+			content = strings.TrimSuffix(content, "\x00")
+			var progressData map[string]any
+			if err := json.Unmarshal([]byte(content), &progressData); err == nil {
+				progressData["type"] = "progress"
+				data, _ := json.Marshal(progressData)
+				fmt.Fprintf(w, "data: %s\n\n", string(data))
+				flusher.Flush()
+			}
+			return
+		}
+		if after, ok0 := strings.CutPrefix(chunk, "__TOOL_CALL:"); ok0 {
+			toolName := after
 			toolName = strings.TrimSuffix(toolName, "__\n")
 			data, _ := json.Marshal(map[string]string{"type": "tool_call", "name": toolName})
 			fmt.Fprintf(w, "data: %s\n\n", string(data))
 			flusher.Flush()
 			return
 		}
-		if strings.HasPrefix(chunk, "__TOOL_RESULT:") {
-			toolName := strings.TrimPrefix(chunk, "__TOOL_RESULT:")
+		if after, ok0 := strings.CutPrefix(chunk, "__TOOL_RESULT:"); ok0 {
+			toolName := after
 			toolName = strings.TrimSuffix(toolName, "__\n")
 			data, _ := json.Marshal(map[string]string{"type": "tool_result", "name": toolName})
 			fmt.Fprintf(w, "data: %s\n\n", string(data))
@@ -290,10 +302,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		data, _ := json.Marshal(map[string]interface{}{"type": "error", "error": err.Error()})
+		data, _ := json.Marshal(map[string]any{"type": "error", "error": err.Error()})
 		fmt.Fprintf(w, "data: %s\n\n", string(data))
 	} else {
-		data, _ := json.Marshal(map[string]interface{}{"type": "done", "done": true})
+		data, _ := json.Marshal(map[string]any{"type": "done", "done": true})
 		fmt.Fprintf(w, "data: %s\n\n", string(data))
 	}
 	flusher.Flush()

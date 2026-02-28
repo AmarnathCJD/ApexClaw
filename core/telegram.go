@@ -262,17 +262,54 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		return nil
 	}
 
+	result = cleanResultForTelegram(result)
+
 	if strings.Contains(result, "[MAX_ITERATIONS]") {
 		flush()
 		explanation := strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1)
 		explanation = strings.TrimSpace(explanation)
-		msg := "⚠️ <b>Couldn't complete the task:</b>\n\n" + explanation
+
+		if explanation == "" {
+			explanation = "Hit iteration limit before completing the task."
+		}
+
+		msg := "⚠️ <b>Task incomplete:</b>\n\n" + explanation
 		_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
 		return nil
 	}
 
 	flush()
 	return nil
+}
+
+func cleanResultForTelegram(result string) string {
+	lines := strings.Split(result, "\n")
+	var cleaned []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "PROGRESS:") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "{\"message\":") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "<tool_call>") {
+			continue
+		}
+		if strings.Contains(trimmed, "</tool_call>") {
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+
+		cleaned = append(cleaned, line)
+	}
+
+	result = strings.Join(cleaned, "\n")
+	result = strings.TrimSpace(result)
+	return result
 }
 
 func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
@@ -444,6 +481,8 @@ func (b *TelegramBot) safeSend(m *telegram.NewMessage, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+
+	text = telegram.HTMLToMarkdownV2(text)
 	if _, err := m.Reply(text, &telegram.SendOptions{ParseMode: telegram.HTML}); err != nil {
 		plain := strings.NewReplacer(
 			"<b>", "", "</b>", "", "<i>", "", "</i>", "",
