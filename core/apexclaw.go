@@ -112,6 +112,15 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 			"Plain text. Use \\n for line breaks. Concise — quality > quantity.\n" +
 			"In groups: respond when mentioned or adding genuine value. Silent otherwise.\n\n" +
 
+			"## Intelligent Context & Assumptions\n" +
+			"When user references something vague, ASSUME context from the situation:\n" +
+			"- User says 'read the file' but no file provided → Use file from replied-to message\n" +
+			"- User says 'process it' but no input → Use previous result or replied-to content\n" +
+			"- User says 'in that chat' but doesn't specify → Use current/recent chat from context\n" +
+			"- User says 'my credentials' → Check if they were provided in this session or context\n" +
+			"- User says 'that error' → Reference the most recent error from a failed tool call\n" +
+			"NEVER ask 'what do you mean?' or 'which file?' — make an intelligent guess from context and act.\n" +
+			"If your guess is wrong, user will correct you and you'll know better next time.\n\n" +
 			"## Memory\n" +
 			"You have history within this session.\n" +
 			"For persistent memory, use write_file to save notes and read_file to recall them.\n" +
@@ -126,28 +135,50 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 			"For complex tasks (deploying, installing, browser workflows, ordering):\n" +
 			"1. Call deep_work FIRST with your plan and estimated steps\n" +
 			"2. Execute each step, checking results before proceeding\n" +
-			"3. Use progress to keep the user informed\n" +
+			"3. Use progress to keep the user informed at each stage\n" +
 			"4. If something fails, adapt and try alternatives\n" +
 			"5. Deliver the final result with relevant URLs/confirmations\n\n" +
+			"### Progress Updates (CRITICAL for Long-Running Tasks):\n" +
+			"For tasks taking >10 seconds, send progress at MAJOR MILESTONES ONLY (not every second):\n" +
+			"- message: Brief status (e.g., 'Installing CLI', 'Configuring environment')\n" +
+			"- percent: Estimated completion 0-100 (jump by ~20-30% per milestone)\n" +
+			"- state: 'running' (during execution), 'success' (step done), 'failure' (error), 'retry' (trying again)\n" +
+			"- detail: Technical details (what's happening, error messages if any, file being processed)\n\n" +
+			"Example sequence for deployment:\n" +
+			"progress message=\"Vercel CLI check\" percent=10 state=running detail=\"Checking if vercel is installed\"\n" +
+			"progress message=\"Building project\" percent=35 state=running detail=\"Running build command\"\n" +
+			"progress message=\"Deploying to production\" percent=70 state=running detail=\"Uploading files to Vercel\"\n" +
+			"progress message=\"Deployment complete\" percent=100 state=success detail=\"https://myapp.vercel.app\"\n\n" +
+			"If step fails:\n" +
+			"progress message=\"Install failed\" percent=15 state=failure detail=\"npm: command not found, trying to install Node.js\"\n" +
+			"[Auto-fix the issue, then retry]\n" +
+			"progress message=\"Node.js installed\" percent=20 state=retry detail=\"Retrying CLI installation\"\n\n" +
 			"### Common Patterns:\n" +
-			"- Deploy something: ensure_command → write files → exec/exec_chain → return URL\n" +
-			"- Browser workflow: browser_open → fill forms → submit → screenshot to verify → report\n" +
-			"- Install & configure: ensure_command → exec_chain for setup → verify working\n" +
-			"- Multi-step CLI: exec_chain with all commands in one call to save iterations\n\n" +
+			"- Deploy something: ensure_command → write files → exec/exec_chain → return URL (use progress at each step)\n" +
+			"- Browser workflow: browser_open → fill forms → submit → screenshot to verify → report (progress for page loads)\n" +
+			"- Install & configure: ensure_command → exec_chain for setup → verify working (progress for installation steps)\n" +
+			"- Multi-step CLI: exec_chain with all commands in one call to save iterations (progress for overall stages)\n\n" +
 			"### Error Recovery (AUTO-FIX MODE):\n" +
-			"When something fails, DON'T report the error back to the user. Instead:\n" +
+			"When something fails, DON'T explain the error or ask the user to fix it. Instead:\n" +
 			"1. Analyze what went wrong\n" +
-			"2. Auto-fix it immediately (delete bad files, regenerate config, try alternative approach)\n" +
+			"2. Auto-fix it immediately (delete bad files, install missing dependencies, use alternative approach)\n" +
 			"3. Retry the operation\n" +
-			"4. Only report success or if genuinely unrecoverable after 2+ fix attempts\n\n" +
-			"Examples of auto-fixes:\n" +
-			"- Bad JSON config → delete it, let system auto-detect, retry deploy\n" +
-			"- Missing dependency → install it, continue\n" +
-			"- Wrong file path → check correct path, read it, proceed\n" +
-			"- Auth failed → check credentials, refresh token, retry\n" +
-			"- Browser doesn't load → take screenshot to see issue, adjust approach\n\n" +
-			"Only surface issues to user if: (a) manual input needed, (b) requires user decision, or (c) genuinely impossible.\n" +
-			"Otherwise: silently fix and proceed.\n\n",
+			"4. Only report result (success or final failure after 2+ fix attempts)\n\n" +
+			"CRITICAL: Don't give excuses or say 'I can't' — actually solve it:\n" +
+			"- 'Access denied' / 'Permission denied' → Check if running as right user, try sudo, or use alternative method\n" +
+			"- 'Tool is restricted' → Check if permissions/config is wrong, fix and retry\n" +
+			"- 'Unknown tool' → Typo in tool name? Check exact name and retry\n" +
+			"- 'Parameter missing' → Provide the missing param value and retry\n" +
+			"- 'API rate limited' → Wait a bit and retry, or use different API endpoint\n" +
+			"- 'File not found' → List directory to find correct path, then proceed\n" +
+			"- 'Command not found' → Install the tool/dependency, then retry\n\n" +
+			"Never respond with:\n" +
+			"- 'I can't because...' (wrong — try to fix it)\n" +
+			"- 'You need to...' (wrong — you do it)\n" +
+			"- 'This is restricted' (wrong — find a workaround)\n" +
+			"- 'I'm blocked by permissions' (wrong — check what's actually blocking and fix it)\n\n" +
+			"Only surface issues to user if: (a) genuinely needs manual input (password, approval), (b) impossible after 2+ fix attempts.\n" +
+			"Otherwise: silently fix and show the result.\n\n",
 	)
 
 	if isWeb {
@@ -167,6 +198,15 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 				"For code, use: <pre language=\"language_code_here\">your code here</pre>\n" +
 				"For inline code, use: <code>snippet</code> — never backticks.\n\n" +
 
+				"## Telegram Context (Auto-Available)\n" +
+				"In Telegram, you automatically have access to:\n" +
+				"- `file_name`: Name of file received from user\n" +
+				"- `file_path`: Local path to downloaded file (if file was sent)\n" +
+				"- `chat_id`: ID of the chat\n" +
+				"- `message_id`: ID of the current message\n" +
+				"- `reply_to_msg_id`: ID of replied-to message (if replying)\n" +
+				"USE THESE AUTOMATICALLY: if user says 'read the file', use `file_path` from context.\n" +
+				"If user replies to a message with attachment, that file is already in your context — no need to ask for it.\n\n" +
 				"## Action Confirmation (CRITICAL)\n" +
 				"For critical / destructive actions (like executing commands, deleting files, etc), you MUST ask for confirmation via inline buttons BEFORE executing the tool, unless the user explicitly skips it.\n" +
 				"Use `tg_send_message_buttons` to show 'Confirm' (e.g., callback \"Confirm\") and 'Cancel' options. Do NOT execute the tool until they click confirm.\n\n",
@@ -298,7 +338,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 		log.Printf("[AGENT] tool=%s result_len=%d", funcName, len(result))
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
 		if isToolError(result) {
-			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
+			toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", funcName, result)
 			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
 		}
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
@@ -408,7 +448,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				}
 				toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", tc.funcName, result)
 				if isToolError(result) {
-					toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", tc.funcName, result)
+					toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", tc.funcName, result)
 					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.funcName, result))
 				}
 				s.mu.Lock()
@@ -451,7 +491,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			for _, r := range results {
 				msg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", r.funcName, r.result)
 				if isToolError(r.result) {
-					msg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", r.funcName, r.result)
+					msg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", r.funcName, r.result)
 					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", r.funcName, r.result))
 				}
 				combinedMsg.WriteString(msg)
@@ -574,7 +614,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		}
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res)
 		if isToolError(res) {
-			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", fn, res)
+			toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", fn, res)
 			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", fn, res))
 		}
 		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
@@ -642,10 +682,21 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 }
 
 func isToolError(result string) bool {
-	r := strings.TrimSpace(result)
-	return strings.HasPrefix(r, "Error:") ||
+	r := strings.TrimSpace(strings.ToLower(result))
+	return strings.HasPrefix(r, "error:") ||
 		strings.HasPrefix(r, "{\"error\"") ||
-		strings.Contains(r, "unknown tool")
+		strings.Contains(r, "unknown tool") ||
+		strings.Contains(r, "access denied") ||
+		strings.Contains(r, "permission denied") ||
+		strings.Contains(r, "not found") ||
+		strings.Contains(r, "failed") ||
+		strings.Contains(r, "error") ||
+		strings.Contains(r, "restricted") ||
+		strings.Contains(r, "denied") ||
+		strings.Contains(r, "invalid") ||
+		strings.Contains(r, "failed") ||
+		strings.Contains(r, "cannot") ||
+		strings.Contains(r, "couldn't")
 }
 
 func cleanReply(s string) string {
@@ -704,14 +755,30 @@ type parsedToolCall struct {
 	argsJSON string
 }
 
+func isValidToolCall(funcName string, attrs map[string]string) bool {
+	if funcName == "" {
+		return false
+	}
+	if len(funcName) > 100 || !regexp.MustCompile(`^[a-zA-Z_]\w*$`).MatchString(funcName) {
+		return false
+	}
+	if len(attrs) > 50 {
+		return false
+	}
+	return true
+}
+
 func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
 	m := toolCallRe.FindStringSubmatch(text)
 	if m == nil {
 		return "", "", false
 	}
 	inner := strings.TrimSpace(m[1])
+	if len(inner) > 10000 {
+		return "", "", false
+	}
 	parts := strings.SplitN(inner, " ", 2)
-	funcName = parts[0]
+	funcName = strings.TrimSpace(parts[0])
 	attrsStr := ""
 	if len(parts) > 1 {
 		attrsStr = parts[1]
@@ -719,7 +786,17 @@ func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
 	attrs := attrRe.FindAllStringSubmatch(attrsStr, -1)
 	kv := make(map[string]string, len(attrs))
 	for _, a := range attrs {
-		kv[a[1]] = a[2]
+		if len(a) >= 3 {
+			key := strings.TrimSpace(a[1])
+			val := strings.TrimSpace(a[2])
+			if len(key) > 100 || len(val) > 100000 {
+				continue
+			}
+			kv[key] = val
+		}
+	}
+	if !isValidToolCall(funcName, kv) {
+		return "", "", false
 	}
 	b, _ := json.Marshal(kv)
 	return funcName, string(b), true
@@ -730,8 +807,11 @@ func parseAllToolCalls(text string) []parsedToolCall {
 	result := make([]parsedToolCall, 0, len(matches))
 	for _, m := range matches {
 		inner := strings.TrimSpace(m[1])
+		if len(inner) > 10000 {
+			continue
+		}
 		parts := strings.SplitN(inner, " ", 2)
-		funcName := parts[0]
+		funcName := strings.TrimSpace(parts[0])
 		attrsStr := ""
 		if len(parts) > 1 {
 			attrsStr = parts[1]
@@ -739,7 +819,17 @@ func parseAllToolCalls(text string) []parsedToolCall {
 		attrs := attrRe.FindAllStringSubmatch(attrsStr, -1)
 		kv := make(map[string]string, len(attrs))
 		for _, a := range attrs {
-			kv[a[1]] = a[2]
+			if len(a) >= 3 {
+				key := strings.TrimSpace(a[1])
+				val := strings.TrimSpace(a[2])
+				if len(key) > 100 || len(val) > 100000 {
+					continue
+				}
+				kv[key] = val
+			}
+		}
+		if !isValidToolCall(funcName, kv) {
+			continue
 		}
 		b, _ := json.Marshal(kv)
 		result = append(result, parsedToolCall{

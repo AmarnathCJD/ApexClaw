@@ -232,8 +232,22 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 			explanation = "Hit iteration limit before completing the task."
 		}
 
-		msg := "⚠️ <b>Task incomplete:</b>\n\n" + explanation
-		_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
+		isFailure := strings.Contains(explanation, "failed") || strings.Contains(explanation, "error") || strings.Contains(explanation, "Failed")
+		if isFailure {
+			reason := explanation
+			lines := strings.Split(reason, "\n")
+			for i, line := range lines {
+				if strings.Contains(line, "trying") || strings.Contains(line, "Trying") {
+					reason = strings.Join(lines[:i+1], "\n")
+					break
+				}
+			}
+			msg := reason
+			_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
+		} else {
+			msg := "⚠️ <b>Task incomplete:</b>\n\n" + explanation
+			_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
+		}
 		return nil
 	}
 

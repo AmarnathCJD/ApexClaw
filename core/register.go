@@ -60,18 +60,6 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	}
 
 	tools.SendProgressFn = func(senderID string, percent int, message string, state string, detail string) (int64, error) {
-		stateEmojis := map[string]string{
-			"running": "⏳",
-			"success": "✓",
-			"failure": "✗",
-			"retry":   "↻",
-		}
-
-		emoji := stateEmojis[state]
-		if emoji == "" {
-			emoji = "•"
-		}
-
 		agentSessions.RLock()
 		var session *AgentSession
 		for key, s := range agentSessions.m {
@@ -82,24 +70,42 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 		}
 		agentSessions.RUnlock()
 
+		// Send WebUI progress
 		if session != nil && session.streamCallback != nil {
 			progressJSON := fmt.Sprintf(`{"message":"%s","percent":%d,"state":"%s","detail":"%s"}`,
 				escapeJSON(message), percent, state, escapeJSON(detail))
 			session.streamCallback(fmt.Sprintf("\x00PROGRESS:%s\x00", progressJSON))
 		}
 
+		// Send/Edit Telegram progress message
 		ctx := getTelegramContext(senderID)
 		if ctx != nil {
 			if chatID, ok := ctx["telegram_id"].(int64); ok {
+				// Build progress text without emoji
 				var text strings.Builder
-				fmt.Fprintf(&text, "%s %s", emoji, message)
+				fmt.Fprintf(&text, "[%s] %s", state, message)
 				if detail != "" && detail != "(no output)" {
 					lines := splitLines(detail, 4)
 					for _, line := range lines {
 						fmt.Fprintf(&text, "\n> %s", line)
 					}
 				}
-				_ = TGSendMessage(fmt.Sprintf("%d", chatID), text.String())
+
+				// Check if we have a progress message ID in context
+				progressMsgID := int32(0)
+				if msgID, ok := ctx["progress_message_id"].(int32); ok {
+					progressMsgID = msgID
+				}
+
+				// If we have a message ID, edit it; otherwise send new message
+				if progressMsgID > 0 {
+					_ = TGEditMessage(fmt.Sprintf("%d", chatID), progressMsgID, text.String())
+				} else {
+					// Send new message and store its ID for future edits
+					_ = TGSendMessage(fmt.Sprintf("%d", chatID), text.String())
+					// Note: TGSendMessage returns string, not message ID
+					// Progress message ID will be tracked differently if needed
+				}
 			}
 		}
 

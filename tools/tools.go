@@ -89,8 +89,6 @@ var All = []*ToolDef{
 	Calculate,
 	Random,
 
-	TextProcess,
-
 	Weather,
 	IPLookup,
 	DNSLookup,
@@ -164,6 +162,27 @@ var All = []*ToolDef{
 	ReadDocument,
 	ListDocuments,
 	SummarizeDocument,
+
+	PDFCreate,
+	PDFExtractText,
+	PDFMerge,
+	PDFSplit,
+	PDFRotate,
+	PDFInfo,
+	LaTeXCreate,
+	LaTeXEdit,
+	LaTeXCompile,
+	DocumentSearch,
+
+	DocumentCompress,
+	DocumentWatermark,
+	MarkdownToPDF,
+	ImageResize,
+	ImageConvert,
+	ImageCompress,
+	VideoTrim,
+	AudioExtract,
+	VideoExtractFrames,
 
 	QRCodeGenerate,
 	URLShorten,
