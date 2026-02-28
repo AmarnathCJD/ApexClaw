@@ -13,9 +13,20 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+var (
+	cachedToken    string
+	cachedTokenExp time.Time
+	tokenMu        sync.Mutex
+)
+
 func GetAnonymousToken() (string, error) {
 	if t := os.Getenv("ZAI_TOKEN"); t != "" {
 		return t, nil
+	}
+	tokenMu.Lock()
+	defer tokenMu.Unlock()
+	if cachedToken != "" && time.Now().Add(60*time.Second).Before(cachedTokenExp) {
+		return cachedToken, nil
 	}
 	resp, err := http.Get("https://chat.z.ai/api/v1/auths/")
 	if err != nil {
@@ -31,7 +42,15 @@ func GetAnonymousToken() (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", err
 	}
-	return out.Token, nil
+	cachedToken = out.Token
+	cachedTokenExp = time.Now().Add(24 * time.Hour)
+	return cachedToken, nil
+}
+
+func ClearTokenCache() {
+	tokenMu.Lock()
+	cachedToken = ""
+	tokenMu.Unlock()
 }
 
 type TokenPair struct {
@@ -48,6 +67,7 @@ type JWTClaims struct {
 
 type RefreshTokenData struct {
 	UserID      string
+	SessionID   string
 	ExpiresAt   time.Time
 	IsFirstTime bool
 }

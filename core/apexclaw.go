@@ -19,6 +19,7 @@ type ToolDef struct {
 	Args               []ToolArg
 	BlocksContext      bool
 	Secure             bool
+	Sequential         bool
 	Execute            func(args map[string]string) string
 	ExecuteWithContext func(args map[string]string, senderID string) string
 }
@@ -252,8 +253,14 @@ func (s *AgentSession) SetDeepWork(maxSteps int, plan string) {
 
 func NewAgentSession(registry *ToolRegistry, mdl string, isWeb bool) *AgentSession {
 	sysPrompt := buildSystemPrompt(registry, isWeb)
+	var client *model.Client
+	if Cfg.DNS != "" {
+		client = model.NewWithCustomDialer(GetCustomDialer())
+	} else {
+		client = model.New()
+	}
 	return &AgentSession{
-		client:   model.New(),
+		client:   client,
 		registry: registry,
 		model:    mdl,
 		isWeb:    isWeb,
@@ -360,8 +367,8 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			return "", fmt.Errorf("model: %w", err)
 		}
 
-		funcName, argsJSON, hasToolCall := parseToolCall(reply)
-		if !hasToolCall {
+		toolCalls := parseAllToolCalls(reply)
+		if len(toolCalls) == 0 {
 			reply = cleanReply(reply)
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
@@ -370,36 +377,89 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			if onChunk != nil {
 				onChunk(reply)
 			}
+			sessionID := strings.TrimPrefix(senderID, "web_")
+			if strings.HasPrefix(senderID, "web_") {
+				go SaveSession(sessionID, s.history)
+			}
 			return reply, nil
 		}
 
-		log.Printf("[AGENT-STREAM] tool=%s", funcName)
+		hasSequential := false
+		for _, tc := range toolCalls {
+			if t, ok := s.registry.Get(tc.funcName); ok && t.Sequential {
+				hasSequential = true
+				break
+			}
+		}
+
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 		s.mu.Unlock()
 
-		if onChunk != nil {
-			onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", funcName))
-		}
-		result := s.executeTool(funcName, argsJSON, senderID)
-		if onChunk != nil {
-			onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", funcName))
-		}
-		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
-		if isToolError(result) {
-			toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
-			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
-		}
-		s.mu.Lock()
-		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
-		s.mu.Unlock()
+		if hasSequential || len(toolCalls) == 1 {
+			for _, tc := range toolCalls {
+				log.Printf("[AGENT-STREAM] tool=%s", tc.funcName)
+				if onChunk != nil {
+					onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", tc.funcName))
+				}
+				result := s.executeTool(tc.funcName, tc.argsJSON, senderID)
+				if onChunk != nil {
+					onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", tc.funcName))
+				}
+				toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", tc.funcName, result)
+				if isToolError(result) {
+					toolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", tc.funcName, result)
+					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.funcName, result))
+				}
+				s.mu.Lock()
+				s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
+				s.mu.Unlock()
 
-		if t, ok := s.registry.Get(funcName); ok && t.BlocksContext {
-			if ctx.Err() != nil {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
-				defer cancel()
+				if t, ok := s.registry.Get(tc.funcName); ok && t.BlocksContext {
+					if ctx.Err() != nil {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
+						defer cancel()
+					}
+				}
 			}
+		} else {
+			type toolResult struct {
+				funcName string
+				result   string
+				index    int
+			}
+			results := make([]toolResult, len(toolCalls))
+			var wg sync.WaitGroup
+			for idx, tc := range toolCalls {
+				wg.Add(1)
+				go func(i int, call parsedToolCall) {
+					defer wg.Done()
+					if onChunk != nil {
+						onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", call.funcName))
+					}
+					res := s.executeTool(call.funcName, call.argsJSON, senderID)
+					if onChunk != nil {
+						onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", call.funcName))
+					}
+					results[i] = toolResult{funcName: call.funcName, result: res, index: i}
+				}(idx, tc)
+			}
+			wg.Wait()
+
+			var combinedMsg strings.Builder
+			for _, r := range results {
+				msg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", r.funcName, r.result)
+				if isToolError(r.result) {
+					msg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", r.funcName, r.result)
+					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", r.funcName, r.result))
+				}
+				combinedMsg.WriteString(msg)
+				combinedMsg.WriteString("\n")
+			}
+			s.mu.Lock()
+			s.history = append(s.history, model.Message{Role: "user", Content: combinedMsg.String()})
+			s.mu.Unlock()
 		}
 	}
 
@@ -413,6 +473,10 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	s.mu.Unlock()
 
 	explanation, err := s.client.Send(ctx, s.model, history)
+	sessionID := strings.TrimPrefix(senderID, "web_")
+	if strings.HasPrefix(senderID, "web_") {
+		go SaveSession(sessionID, s.history)
+	}
 	if err == nil {
 		explanation = cleanReply(explanation)
 		if onChunk != nil {
@@ -612,6 +676,14 @@ func GetOrCreateAgentSession(key string) *AgentSession {
 	}
 	isWeb := strings.HasPrefix(key, "web_")
 	s = NewAgentSession(GlobalRegistry, Cfg.DefaultModel, isWeb)
+	if isWeb {
+		sessionID := strings.TrimPrefix(key, "web_")
+		if hist := LoadSession(sessionID); len(hist) > 0 {
+			s.mu.Lock()
+			s.history = append(s.history, hist...)
+			s.mu.Unlock()
+		}
+	}
 	agentSessions.Lock()
 	agentSessions.m[key] = s
 	agentSessions.Unlock()
@@ -626,6 +698,11 @@ func DeleteAgentSession(key string) {
 
 var toolCallRe = regexp.MustCompile(`(?s)<tool_call>(.*?)(?:/>|</tool_call>)`)
 var attrRe = regexp.MustCompile(`(\w+)="([^"]*)"`)
+
+type parsedToolCall struct {
+	funcName string
+	argsJSON string
+}
 
 func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
 	m := toolCallRe.FindStringSubmatch(text)
@@ -646,4 +723,29 @@ func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
 	}
 	b, _ := json.Marshal(kv)
 	return funcName, string(b), true
+}
+
+func parseAllToolCalls(text string) []parsedToolCall {
+	matches := toolCallRe.FindAllStringSubmatch(text, -1)
+	result := make([]parsedToolCall, 0, len(matches))
+	for _, m := range matches {
+		inner := strings.TrimSpace(m[1])
+		parts := strings.SplitN(inner, " ", 2)
+		funcName := parts[0]
+		attrsStr := ""
+		if len(parts) > 1 {
+			attrsStr = parts[1]
+		}
+		attrs := attrRe.FindAllStringSubmatch(attrsStr, -1)
+		kv := make(map[string]string, len(attrs))
+		for _, a := range attrs {
+			kv[a[1]] = a[2]
+		}
+		b, _ := json.Marshal(kv)
+		result = append(result, parsedToolCall{
+			funcName: funcName,
+			argsJSON: string(b),
+		})
+	}
+	return result
 }

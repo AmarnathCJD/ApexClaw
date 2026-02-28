@@ -35,6 +35,7 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 			Args:               bridgeArgs(t.Args),
 			Secure:             t.Secure,
 			BlocksContext:      t.BlocksContext,
+			Sequential:         t.Sequential,
 			Execute:            t.Execute,
 			ExecuteWithContext: t.ExecuteWithContext,
 		})

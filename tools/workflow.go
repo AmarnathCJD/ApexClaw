@@ -16,6 +16,7 @@ var DeepWork = &ToolDef{
 		{Name: "plan", Description: "Brief plan of steps you will execute (helps track progress)", Required: true},
 		{Name: "max_steps", Description: "Estimated tool calls needed (default: 30, max: 50)", Required: false},
 	},
+	Sequential: true,
 	ExecuteWithContext: func(args map[string]string, senderID string) string {
 		plan := args["plan"]
 		if plan == "" {
@@ -52,6 +53,7 @@ var Progress = &ToolDef{
 		{Name: "state", Description: "Status: 'running', 'success', 'failure', 'retry' (optional, default: 'running')", Required: false},
 		{Name: "detail", Description: "Detailed output/error message (optional)", Required: false},
 	},
+	Sequential: true,
 	ExecuteWithContext: func(args map[string]string, senderID string) string {
 		message := args["message"]
 		if message == "" {

@@ -18,8 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"apexclaw/model"
-
 	"github.com/amarnathcjd/gogram/telegram"
 	"github.com/joho/godotenv"
 )
@@ -98,7 +96,7 @@ func (b *TelegramBot) Start() error {
 		if m.Voice() != nil || m.Audio() != nil {
 			return b.handleVoice(m)
 		}
-		return b.handlePhoto(m)
+		return b.handleFile(m)
 	}, telegram.IsMedia)
 
 	b.client.On(telegram.OnCallback, func(c *telegram.CallbackQuery) error {
@@ -232,15 +230,14 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 			return err
 		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("🔧 %d tools:\n\n", len(tools)))
+		fmt.Fprintf(&sb, "🔧 %d tools:\n\n", len(tools))
 		for _, t := range tools {
-			sb.WriteString(fmt.Sprintf("• %s — %s\n", t.Name, t.Description))
+			fmt.Fprintf(&sb, "%s, ", t.Name)
 		}
 		_, err := m.Reply(strings.TrimSpace(sb.String()))
 		return err
 	}
 
-	// Handle /webcode command
 	parts := strings.Fields(text)
 	if len(parts) > 0 && parts[0] == "/webcode" {
 		return handleWebCodeCommand(m, parts)
@@ -381,7 +378,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 	return nil
 }
 
-func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
+func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 	userID := strconv.FormatInt(m.Sender.ID, 10)
 
 	if userID != Cfg.OwnerID {
@@ -402,44 +399,23 @@ func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
 		}
 	}
 
-	log.Printf("[TG] photo from %s (chat %d)", userID, m.ChatID())
+	var fileName = m.File.Name
+
+	log.Printf("[TG] file from %s (chat %d, type: %s)", userID, m.ChatID(), fileName)
 	b.sendTyping(m)
 
-	photoLocation, err := m.Download()
+	filePath, err := m.Download()
 	if err != nil {
-		log.Printf("[TG] photo download error: %v", err)
-		_, _ = m.Reply("⚠️ Failed to download your photo.")
+		log.Printf("[TG] file download error: %v", err)
+		_, _ = m.Reply("⚠️ Failed to download your file.")
 		return nil
 	}
-	defer os.Remove(photoLocation)
+	defer os.Remove(filePath)
 
 	caption := m.Text()
 	if caption == "" {
-		caption = "What is in this image? Describe it in detail."
+		caption = fmt.Sprintf("Process this file: %s", fileName)
 	}
-
-	token, err := model.GetAnonymousToken()
-	if err != nil {
-		log.Printf("[TG] token error: %v", err)
-		_, _ = m.Reply("⚠️ Failed to get auth token.")
-		return nil
-	}
-
-	photoBytes, err := os.ReadFile(photoLocation)
-	if err != nil {
-		log.Printf("[TG] photo read error: %v", err)
-		_, _ = m.Reply("⚠️ Failed to read your photo.")
-		return nil
-	}
-
-	uploadedFile, err := model.UploadImageData(token, photoBytes, "photo.jpg")
-	if err != nil {
-		log.Printf("[TG] image upload error: %v", err)
-		_, _ = m.Reply("⚠️ Failed to upload image to model.")
-		return nil
-	}
-
-	log.Printf("[TG] image uploaded: id=%s", uploadedFile.ID)
 
 	tgCtx := map[string]any{
 		"owner_id":    userID,
@@ -448,6 +424,8 @@ func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
 		"chat_id":     m.ChatID(),
 		"telegram_id": m.ChatID(),
 		"message_id":  int64(m.ID),
+		"file_name":   fileName,
+		"file_path":   filePath,
 	}
 	if m.ChatID() < 0 {
 		tgCtx["group_id"] = m.ChatID()
@@ -460,18 +438,16 @@ func (b *TelegramBot) handlePhoto(m *telegram.NewMessage) error {
 	}
 	setTelegramContext(userID, tgCtx)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
 
-	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
-	_, err = session.RunStreamWithFiles(ctx, userID, caption, []*model.UpstreamFile{uploadedFile}, onChunk)
-	flush()
+	_, err = session.Run(ctx, userID, caption)
 
 	if err != nil {
-		log.Printf("[TG] agent error for image: %v", err)
-		_, _ = m.Reply("⚠️ Something went wrong analyzing the image.")
+		log.Printf("[TG] agent error for file: %v", err)
+		_, _ = m.Reply("⚠️ Something went wrong processing the file.")
 		return nil
 	}
 	return nil

@@ -24,13 +24,7 @@ var (
 )
 
 func getDataDir() string {
-	if rodDataDir != "" {
-		return rodDataDir
-	}
-	home, _ := os.UserHomeDir()
-	rodDataDir = filepath.Join(home, ".apexclaw", "browser-data")
-	os.MkdirAll(rodDataDir, 0755)
-	return rodDataDir
+	return filepath.Join(os.TempDir(), "apexclaw-browser")
 }
 
 func getBrowser() (*rod.Browser, error) {

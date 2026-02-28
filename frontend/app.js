@@ -68,12 +68,38 @@ document.addEventListener('DOMContentLoaded', () => {
     function unlockApp() {
         authOverlay.classList.add('hidden');
         mainApp.classList.remove('hidden');
+        connectEventStream(accessToken);
     }
 
     function forceLogout() {
         accessToken = null;
         refreshTokenID = null;
         location.reload();
+    }
+
+    function showToast(message) {
+        const toast = document.createElement('div');
+        toast.className = 'toast';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 4000);
+    }
+
+    function connectEventStream(token) {
+        const evtSource = new EventSource('/api/events?token=' + token);
+        evtSource.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (data.type === 'config_reload') {
+                    showToast('Config reloaded. Model: ' + data.model);
+                }
+            } catch (err) {
+                console.error('Event parse error:', err);
+            }
+        };
+        evtSource.onerror = () => {
+            evtSource.close();
+        };
     }
 
     // ===== Change Code Modal =====
@@ -163,20 +189,51 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const data = await res.json();
 
+            const fieldLabels = {
+                'TELEGRAM_API_ID': 'Telegram API ID',
+                'TELEGRAM_API_HASH': 'Telegram API Hash',
+                'TELEGRAM_BOT_TOKEN': 'Telegram Bot Token',
+                'OWNER_ID': 'Owner ID',
+                'WEB_PORT': 'Web Server Port',
+                'WEB_LOGIN_CODE': 'Web Login Code',
+                'DEFAULT_MODEL': 'Default AI Model',
+                'MAX_ITERATIONS': 'Max Agent Iterations',
+                'DNS': 'Custom DNS Server',
+                'ZAI_TOKEN': 'ZAI Token',
+                'EMAIL_ADDRESS': 'Gmail Address',
+                'EMAIL_PASSWORD': 'Gmail App Password'
+            };
+
+            const secretFields = new Set(['TELEGRAM_API_HASH', 'TELEGRAM_BOT_TOKEN', 'WEB_LOGIN_CODE', 'ZAI_TOKEN', 'EMAIL_PASSWORD']);
+
             Object.keys(data).forEach(key => {
                 const group = document.createElement('div');
                 group.className = 'setting-group';
 
                 const label = document.createElement('label');
-                label.textContent = key;
+                label.textContent = fieldLabels[key] || key;
 
-                const input = document.createElement('input');
-                input.type = 'text';
-                input.value = data[key];
-                input.dataset.key = key;
+                let control;
+                if (key === 'DEFAULT_MODEL') {
+                    control = document.createElement('select');
+                    control.dataset.key = key;
+                    const models = ['GLM-4.7', 'GLM-5', 'GLM-4.7-thinking', 'GLM-4.7-search'];
+                    models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        if (m === data[key]) opt.selected = true;
+                        control.appendChild(opt);
+                    });
+                } else {
+                    control = document.createElement('input');
+                    control.type = secretFields.has(key) ? 'password' : 'text';
+                    control.value = data[key];
+                    control.dataset.key = key;
+                }
 
                 group.appendChild(label);
-                group.appendChild(input);
+                group.appendChild(control);
                 settingsForm.appendChild(group);
             });
             settingsStatus.textContent = "";
@@ -192,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSettingsBtn.addEventListener('click', async () => {
         settingsStatus.textContent = "Saving...";
         const newSettings = {};
-        settingsForm.querySelectorAll('input').forEach(i => {
+        settingsForm.querySelectorAll('input, select').forEach(i => {
             newSettings[i.dataset.key] = i.value;
         });
 

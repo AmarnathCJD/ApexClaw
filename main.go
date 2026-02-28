@@ -11,10 +11,11 @@ import (
 func main() {
 	model.StartVersionUpdater()
 	core.RegisterBuiltinTools(core.GlobalRegistry)
+	core.StartConfigWatcher()
 	log.Printf("[TOOLS] loaded: %d", len(core.GlobalRegistry.List()))
 
 	go func() {
-		if err := server.Start(":8080"); err != nil {
+		if err := server.Start(core.Cfg.WebPort); err != nil {
 			log.Printf("[Web] error: %v", err)
 		}
 	}()

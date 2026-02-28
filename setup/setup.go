@@ -86,6 +86,41 @@ func NewSetup() *Model {
 			secret:      false,
 		},
 		{
+			key:         "WEB_PORT",
+			label:       "Web Server Port",
+			placeholder: ":8080",
+			required:    false,
+			secret:      false,
+		},
+		{
+			key:         "WEB_LOGIN_CODE",
+			label:       "Web Login Code (6 digits)",
+			placeholder: "123456",
+			required:    false,
+			secret:      true,
+		},
+		{
+			key:         "DEFAULT_MODEL",
+			label:       "Default AI Model",
+			placeholder: "GLM-4.7",
+			required:    false,
+			secret:      false,
+		},
+		{
+			key:         "MAX_ITERATIONS",
+			label:       "Max Agent Iterations",
+			placeholder: "10",
+			required:    false,
+			secret:      false,
+		},
+		{
+			key:         "DNS",
+			label:       "Custom DNS Server",
+			placeholder: "1.1.1.1 (optional, for all network calls)",
+			required:    false,
+			secret:      false,
+		},
+		{
 			key:         "ZAI_TOKEN",
 			label:       "ZAI Token",
 			placeholder: "your-token-here",
@@ -248,7 +283,7 @@ func (m *Model) submit() tea.Cmd {
 			if field.required && field.value == "" {
 				return ErrorMsg(fmt.Errorf("'%s' is required", field.label))
 			}
-			if field.value != "" && (field.key == "TELEGRAM_API_ID" || field.key == "OWNER_ID") {
+			if field.value != "" && (field.key == "TELEGRAM_API_ID" || field.key == "OWNER_ID" || field.key == "MAX_ITERATIONS") {
 				if _, err := strconv.Atoi(field.value); err != nil {
 					return ErrorMsg(fmt.Errorf("'%s' must be numeric", field.label))
 				}

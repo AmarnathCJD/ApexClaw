@@ -6,6 +6,7 @@ type ToolDef struct {
 	Args               []ToolArg
 	Secure             bool
 	BlocksContext      bool
+	Sequential         bool
 	Execute            func(args map[string]string) string
 	ExecuteWithContext func(args map[string]string, senderID string) string
 }

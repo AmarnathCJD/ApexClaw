@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"apexclaw/core"
@@ -31,6 +32,15 @@ type ChatRequest struct {
 	UserID  string `json:"user_id"`
 }
 
+type sseNotifyClient struct {
+	ch chan string
+}
+
+var (
+	notifyClientsMu sync.RWMutex
+	notifyClients   = make(map[string]*sseNotifyClient)
+)
+
 func Start(addr string) error {
 	model.GlobalTokenStore.ClearAllTokens()
 
@@ -47,6 +57,24 @@ func Start(addr string) error {
 
 	http.HandleFunc("/api/chat", authMiddleware(handleChat))
 	http.HandleFunc("/api/settings", authMiddleware(handleSettings))
+	http.HandleFunc("/api/events", authMiddleware(handleEvents))
+	http.HandleFunc("/api/config/reload", authMiddleware(handleConfigReload))
+
+	core.BroadcastReloadFn = func() {
+		msg, _ := json.Marshal(map[string]any{
+			"type":    "config_reload",
+			"model":   core.Cfg.DefaultModel,
+			"maxIter": core.Cfg.MaxIterations,
+		})
+		notifyClientsMu.RLock()
+		defer notifyClientsMu.RUnlock()
+		for _, client := range notifyClients {
+			select {
+			case client.ch <- string(msg):
+			default:
+			}
+		}
+	}
 
 	log.Printf("[Web] listening on http://localhost%s", addr)
 	return http.ListenAndServe(addr, nil)
@@ -242,7 +270,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.UserID = "web_" + core.Cfg.OwnerID
+	claims, _ := r.Context().Value("jwt_claims").(*model.JWTClaims)
+	req.UserID = "web_" + claims.SessionID
 
 	if req.Message == "" {
 		http.Error(w, "Empty message", http.StatusBadRequest)
@@ -346,6 +375,66 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims, _ := r.Context().Value("jwt_claims").(*model.JWTClaims)
+	sessionID := claims.SessionID
+	if sessionID == "" {
+		http.Error(w, "Invalid session", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	client := &sseNotifyClient{ch: make(chan string, 8)}
+	notifyClientsMu.Lock()
+	notifyClients[sessionID] = client
+	notifyClientsMu.Unlock()
+
+	defer func() {
+		notifyClientsMu.Lock()
+		delete(notifyClients, sessionID)
+		notifyClientsMu.Unlock()
+	}()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+	for {
+		select {
+		case msg := <-client.ch:
+			fmt.Fprintf(w, "data: %s\n\n", msg)
+			flusher.Flush()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func handleConfigReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	core.ReloadConfig()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"model":   core.Cfg.DefaultModel,
+		"maxIter": core.Cfg.MaxIterations,
+	})
 }
 
 // ===== Token Generation =====

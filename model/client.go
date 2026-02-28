@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -27,15 +29,82 @@ type Client struct {
 }
 
 func New() *Client {
-	return &Client{http: &http.Client{Timeout: 90 * time.Second}}
+	transport := &http.Transport{
+		Dial: func(network, addr string) (net.Conn, error) {
+			return net.Dial(network, addr)
+		},
+	}
+	return &Client{http: &http.Client{Timeout: 90 * time.Second, Transport: transport}}
 }
 
+func NewWithCustomDialer(dialer *net.Dialer) *Client {
+	transport := &http.Transport{
+		Dial: func(network, addr string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+	return &Client{http: &http.Client{Timeout: 90 * time.Second, Transport: transport}}
+}
+
+const (
+	maxRetries    = 3
+	retryBaseMs   = 1000
+)
+
+var retryableHTTPCodes = map[int]bool{429: true, 500: true, 502: true, 503: true}
+
 func (c *Client) Send(ctx context.Context, model string, messages []Message) (string, error) {
-	return c.sendInternal(ctx, model, messages, nil)
+	return c.sendWithRetry(ctx, model, messages, nil)
 }
 
 func (c *Client) SendWithFiles(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
-	return c.sendInternal(ctx, model, messages, files)
+	return c.sendWithRetry(ctx, model, messages, files)
+}
+
+func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(retryBaseMs*(1<<uint(attempt-1))) * time.Millisecond
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			log.Printf("[MODEL] retry attempt %d after %v (last err: %v)", attempt+1, delay, lastErr)
+		}
+		result, err := c.sendInternal(ctx, model, messages, files)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		errStr := err.Error()
+		isRetryable := false
+		for code := range retryableHTTPCodes {
+			if strings.Contains(errStr, fmt.Sprintf("upstream %d", code)) {
+				isRetryable = true
+				break
+			}
+		}
+		if !isRetryable {
+			var netErr *net.OpError
+			if errors.As(err, &netErr) {
+				isRetryable = true
+			}
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return "", err
+		}
+		if strings.Contains(errStr, "upstream 401") {
+			ClearTokenCache()
+		}
+		if !isRetryable {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("all %d retries failed: %w", maxRetries, lastErr)
 }
 
 func (c *Client) sendInternal(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {

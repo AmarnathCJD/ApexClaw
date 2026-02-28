@@ -201,7 +201,8 @@ body {
     color: var(--text-secondary);
 }
 
-.setting-group input {
+.setting-group input,
+.setting-group select {
     width: 100%;
     padding: 12px 14px;
     border: 1px solid var(--border-color);
@@ -213,7 +214,17 @@ body {
     transition: all 0.2s ease;
 }
 
-.setting-group input:focus {
+.setting-group select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%231F1F1E' d='M1 4l5 4 5-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+    cursor: pointer;
+}
+
+.setting-group input:focus,
+.setting-group select:focus {
     border-color: var(--text-primary);
     box-shadow: 0 0 0 2px rgba(120, 120, 120, 0.1);
     outline: none;
@@ -774,4 +785,20 @@ textarea::placeholder {
     white-space: pre-wrap;
     word-break: break-word;
     border-left: 2px solid var(--accent-color);
+}
+
+.toast {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    z-index: 2000;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    animation: fadeIn 0.3s ease;
 }
