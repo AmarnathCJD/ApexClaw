@@ -75,12 +75,22 @@ func (b *TelegramBot) Start() error {
 
 	StartHeartbeat(b.client)
 
+	b.client.OnCommand("start", b.handleStart)
+	b.client.OnCommand("reset", b.handleReset)
+	b.client.OnCommand("status", b.handleStatus)
+	b.client.OnCommand("tasks", b.handleTasks)
+	b.client.OnCommand("tools", b.handleTools)
+	b.client.OnCommand("addsudo", b.handleAddSudo)
+	b.client.OnCommand("rmsudo", b.handleRmSudo)
+	b.client.OnCommand("listsudo", b.handleListSudo)
+	b.client.OnCommand("webcode", b.handleWebCode)
+
 	b.client.On(telegram.OnMessage, func(m *telegram.NewMessage) error {
 		if m.Sender == nil || m.Sender.Bot {
 			return nil
 		}
 		text := m.Text()
-		if text == "" {
+		if text == "" || strings.HasPrefix(text, "/") {
 			return nil
 		}
 		return b.handleText(m, text)
@@ -194,65 +204,6 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		}
 	}
 	setTelegramContext(userID, tgCtx)
-
-	switch text {
-	case "/start":
-		msg := "👋 Hey, I'm ApexClaw.\n" +
-			"Chat normally — I have tools and I'll use them when needed.\n\n" +
-			"/reset — clear history\n" +
-			"/status — session info\n" +
-			"/tasks — list scheduled tasks\n" +
-			"/tools — list tools"
-		if userID == Cfg.OwnerID {
-			msg += "\n\n🛠️ Sudo Management:\n" +
-				"/addsudo — Add a sudo user\n" +
-				"/rmsudo — Remove a sudo user\n" +
-				"/listsudo — List all sudo users"
-		}
-		_, err := m.Reply(msg)
-		return err
-
-	case "/reset":
-		GetOrCreateAgentSession(userID).Reset()
-		_, err := m.Reply("🔄 Conversation cleared.")
-		return err
-
-	case "/status":
-		s := GetOrCreateAgentSession(userID)
-		_, err := m.Reply(fmt.Sprintf(
-			"History: %d msgs | Model: %s | Tools: %d",
-			s.HistoryLen(), s.model, len(GlobalRegistry.List()),
-		))
-		return err
-
-	case "/tasks":
-		_, err := m.Reply(ListHeartbeatTasks())
-		return err
-
-	case "/tools":
-		tools := GlobalRegistry.List()
-		if len(tools) == 0 {
-			_, err := m.Reply("No tools registered.")
-			return err
-		}
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "🔧 %d tools:\n\n", len(tools))
-		for _, t := range tools {
-			fmt.Fprintf(&sb, "%s, ", t.Name)
-		}
-		_, err := m.Reply(strings.TrimSpace(sb.String()))
-		return err
-	}
-
-	parts := strings.Fields(text)
-	if len(parts) > 0 {
-		switch parts[0] {
-		case "/addsudo", "/rmsudo", "/listsudo":
-			return b.handleSudoCommands(m, parts)
-		case "/webcode":
-			return handleWebCodeCommand(m, parts)
-		}
-	}
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -588,6 +539,99 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64) (func(s
 	return onChunk, flush
 }
 
+func (b *TelegramBot) handleStart(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	msg := "👋 Hey, I'm ApexClaw.\n" +
+		"Chat normally — I have tools and I'll use them when needed.\n\n" +
+		"/reset — clear history\n" +
+		"/status — session info\n" +
+		"/tasks — list scheduled tasks\n" +
+		"/tools — list tools"
+	if userID == Cfg.OwnerID {
+		msg += "\n\n🛠️ Sudo Management:\n" +
+			"/addsudo — Add a sudo user\n" +
+			"/rmsudo — Remove a sudo user\n" +
+			"/listsudo — List all sudo users"
+	}
+	_, err := m.Reply(msg)
+	return err
+}
+
+func (b *TelegramBot) handleReset(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	GetOrCreateAgentSession(userID).Reset()
+	_, err := m.Reply("🔄 Conversation cleared.")
+	return err
+}
+
+func (b *TelegramBot) handleStatus(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	s := GetOrCreateAgentSession(userID)
+	_, err := m.Reply(fmt.Sprintf(
+		"History: %d msgs | Model: %s | Tools: %d",
+		s.HistoryLen(), s.model, len(GlobalRegistry.List()),
+	))
+	return err
+}
+
+func (b *TelegramBot) handleTasks(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	_, err := m.Reply(ListHeartbeatTasks())
+	return err
+}
+
+func (b *TelegramBot) handleTools(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	tools := GlobalRegistry.List()
+	if len(tools) == 0 {
+		_, err := m.Reply("No tools registered.")
+		return err
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🔧 %d tools:\n\n", len(tools))
+	for _, t := range tools {
+		fmt.Fprintf(&sb, "%s, ", t.Name)
+	}
+	_, err := m.Reply(strings.TrimSpace(sb.String()))
+	return err
+}
+
+func (b *TelegramBot) handleAddSudo(m *telegram.NewMessage) error {
+	return b.handleSudoCommands(m, strings.Fields(m.Text()))
+}
+
+func (b *TelegramBot) handleRmSudo(m *telegram.NewMessage) error {
+	return b.handleSudoCommands(m, strings.Fields(m.Text()))
+}
+
+func (b *TelegramBot) handleListSudo(m *telegram.NewMessage) error {
+	return b.handleSudoCommands(m, strings.Fields(m.Text()))
+}
+
+func (b *TelegramBot) handleWebCode(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	parts := strings.Fields(m.Text())
+	return handleWebCodeCommand(m, parts)
+}
+
 func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
 	if len(parts) == 1 {
 		_, err := m.Reply(
@@ -659,7 +703,7 @@ func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string)
 	}
 
 	cmd := parts[0]
-	if cmd == "/listsudo" {
+	if strings.Contains(cmd, "listsudo") {
 		if len(Cfg.SudoIDs) == 0 {
 			_, err := m.Reply("No sudo users added.")
 			return err
@@ -712,7 +756,7 @@ func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string)
 	currentSudos := Cfg.SudoIDs
 	newSudos := []string{}
 
-	if cmd == "/addsudo" {
+	if strings.Contains(cmd, "addsudo") {
 		found := slices.Contains(currentSudos, targetID)
 		if found {
 			_, err := m.Reply(fmt.Sprintf("✅ user <code>%s</code> is already a sudo user.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
@@ -720,7 +764,7 @@ func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string)
 		}
 		newSudos = append(currentSudos, targetID)
 		_, _ = m.Reply(fmt.Sprintf("✅ Added <code>%s</code> to sudo users.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
-	} else if cmd == "/rmsudo" {
+	} else if strings.Contains(cmd, "rmsudo") {
 		found := false
 		for _, s := range currentSudos {
 			if s != targetID {
