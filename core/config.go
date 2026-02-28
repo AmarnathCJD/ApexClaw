@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,7 @@ type Config struct {
 	TelegramAPIHash  string
 	TelegramBotToken string
 	OwnerID          string
+	SudoIDs          []string
 	MaxIterations    int
 
 	WebPort       string
@@ -41,6 +44,7 @@ var Cfg = Config{
 	TelegramBotToken: "",
 	DefaultModel:     "GLM-4.7",
 	OwnerID:          "",
+	SudoIDs:          []string{},
 	MaxIterations:    10,
 	WebPort:          ":8080",
 	WebLoginCode:     "123456",
@@ -70,6 +74,7 @@ func init() {
 	Cfg.TelegramAPIHash = os.Getenv("TELEGRAM_API_HASH")
 	Cfg.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	Cfg.OwnerID = os.Getenv("OWNER_ID")
+	Cfg.SudoIDs = strings.Fields(os.Getenv("SUDO_IDS"))
 
 	if maxIter := os.Getenv("MAX_ITERATIONS"); maxIter != "" {
 		if n, err := strconv.Atoi(maxIter); err == nil && n > 0 {
@@ -113,6 +118,13 @@ func init() {
 	}
 
 	log.Printf("[Web] Default login code: %s (WEB_FIRST_LOGIN=%v)", Cfg.WebLoginCode, Cfg.WebFirstLogin)
+}
+
+func IsSudo(userID string) bool {
+	if userID == Cfg.OwnerID {
+		return true
+	}
+	return slices.Contains(Cfg.SudoIDs, userID)
 }
 
 func generateJWTSecret() string {
@@ -189,7 +201,10 @@ func reloadSafeConfig() {
 		UpdateDNSResolver()
 		log.Printf("[DNS] Updated DNS: %s", Cfg.DNS)
 	}
-	log.Printf("[CONFIG] hot-reload complete: model=%s max_iter=%d", Cfg.DefaultModel, Cfg.MaxIterations)
+	if sudo, ok := envMap["SUDO_IDS"]; ok {
+		Cfg.SudoIDs = strings.Fields(sudo)
+	}
+	log.Printf("[CONFIG] hot-reload complete: model=%s max_iter=%d sudos=%d", Cfg.DefaultModel, Cfg.MaxIterations, len(Cfg.SudoIDs))
 }
 
 func ReloadConfig() {

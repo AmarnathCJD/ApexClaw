@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,7 +105,7 @@ func (b *TelegramBot) Start() error {
 			return nil
 		}
 		userID := strconv.FormatInt(c.SenderID, 10)
-		if userID != Cfg.OwnerID {
+		if !IsSudo(userID) {
 			c.Answer("Access denied", &telegram.CallbackOptions{Alert: true})
 			return nil
 		}
@@ -145,7 +146,7 @@ func (b *TelegramBot) Start() error {
 
 func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	userID := strconv.FormatInt(m.Sender.ID, 10)
-	if userID != Cfg.OwnerID {
+	if !IsSudo(userID) {
 		return nil
 	}
 
@@ -196,14 +197,19 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 
 	switch text {
 	case "/start":
-		_, err := m.Reply(
-			"👋 Hey, I'm ApexClaw.\n" +
-				"Chat normally — I have tools and I'll use them when needed.\n\n" +
-				"/reset — clear history\n" +
-				"/status — session info\n" +
-				"/tasks — list scheduled tasks\n" +
-				"/tools — list tools",
-		)
+		msg := "👋 Hey, I'm ApexClaw.\n" +
+			"Chat normally — I have tools and I'll use them when needed.\n\n" +
+			"/reset — clear history\n" +
+			"/status — session info\n" +
+			"/tasks — list scheduled tasks\n" +
+			"/tools — list tools"
+		if userID == Cfg.OwnerID {
+			msg += "\n\n🛠️ Sudo Management:\n" +
+				"/addsudo — Add a sudo user\n" +
+				"/rmsudo — Remove a sudo user\n" +
+				"/listsudo — List all sudo users"
+		}
+		_, err := m.Reply(msg)
 		return err
 
 	case "/reset":
@@ -239,8 +245,13 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	}
 
 	parts := strings.Fields(text)
-	if len(parts) > 0 && parts[0] == "/webcode" {
-		return handleWebCodeCommand(m, parts)
+	if len(parts) > 0 {
+		switch parts[0] {
+		case "/addsudo", "/rmsudo", "/listsudo":
+			return b.handleSudoCommands(m, parts)
+		case "/webcode":
+			return handleWebCodeCommand(m, parts)
+		}
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
@@ -311,7 +322,7 @@ func cleanResultForTelegram(result string) string {
 
 func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 	userID := strconv.FormatInt(m.Sender.ID, 10)
-	if userID != Cfg.OwnerID {
+	if !IsSudo(userID) {
 		return nil
 	}
 	if !m.IsPrivate() {
@@ -381,7 +392,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 	userID := strconv.FormatInt(m.Sender.ID, 10)
 
-	if userID != Cfg.OwnerID {
+	if !IsSudo(userID) {
 		return nil
 	}
 
@@ -639,6 +650,96 @@ func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
 		_, err := m.Reply("Unknown subcommand. Use: /webcode show | set <code> | random")
 		return err
 	}
+}
+
+func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if userID != Cfg.OwnerID {
+		return nil
+	}
+
+	cmd := parts[0]
+	if cmd == "/listsudo" {
+		if len(Cfg.SudoIDs) == 0 {
+			_, err := m.Reply("No sudo users added.")
+			return err
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "👑 <b>Owner:</b> <code>%s</code>\n", Cfg.OwnerID)
+		fmt.Fprintf(&sb, "🛠️ <b>Sudo Users (%d):</b>\n", len(Cfg.SudoIDs))
+		for _, id := range Cfg.SudoIDs {
+			fmt.Fprintf(&sb, "• <code>%s</code>\n", id)
+		}
+		_, err := m.Reply(sb.String(), &telegram.SendOptions{ParseMode: telegram.HTML})
+		return err
+	}
+
+	var targetID string
+	if m.IsReply() {
+		r, _ := m.GetReplyMessage()
+		if r != nil {
+			targetID = strconv.FormatInt(r.SenderID(), 10)
+		}
+	} else if len(parts) > 1 {
+		arg := parts[1]
+		if _, err := strconv.ParseInt(arg, 10, 64); err == nil {
+			targetID = arg
+		} else {
+			peer, err := TGResolvePeer(arg)
+			if err == nil {
+				if u, ok := peer.(*telegram.UserObj); ok {
+					targetID = strconv.FormatInt(u.ID, 10)
+				}
+			}
+		}
+	}
+
+	if targetID == "" {
+		_, err := m.Reply(fmt.Sprintf("Usage: %s <id/username> or reply to a message", cmd))
+		return err
+	}
+
+	if targetID == Cfg.OwnerID {
+		_, err := m.Reply("❌ That's the owner!")
+		return err
+	}
+
+	envMap, _ := godotenv.Read()
+	if envMap == nil {
+		envMap = make(map[string]string)
+	}
+
+	currentSudos := Cfg.SudoIDs
+	newSudos := []string{}
+
+	if cmd == "/addsudo" {
+		found := slices.Contains(currentSudos, targetID)
+		if found {
+			_, err := m.Reply(fmt.Sprintf("✅ user <code>%s</code> is already a sudo user.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
+			return err
+		}
+		newSudos = append(currentSudos, targetID)
+		_, _ = m.Reply(fmt.Sprintf("✅ Added <code>%s</code> to sudo users.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
+	} else if cmd == "/rmsudo" {
+		found := false
+		for _, s := range currentSudos {
+			if s != targetID {
+				newSudos = append(newSudos, s)
+			} else {
+				found = true
+			}
+		}
+		if !found {
+			_, err := m.Reply(fmt.Sprintf("❌ user <code>%s</code> is not a sudo user.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
+			return err
+		}
+		_, _ = m.Reply(fmt.Sprintf("✅ Removed <code>%s</code> from sudo users.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
+	}
+
+	Cfg.SudoIDs = newSudos
+	envMap["SUDO_IDS"] = strings.Join(newSudos, " ")
+	godotenv.Write(envMap, ".env")
+	return nil
 }
 
 func GenerateRandomCode() string {

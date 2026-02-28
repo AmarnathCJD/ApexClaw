@@ -10,3 +10,4 @@ codey.md
 *.json
 release/
 ig.go
+*.ps1

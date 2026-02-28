@@ -66,7 +66,7 @@ func sysFormatBytes(b uint64) string {
 
 var ProcessList = &ToolDef{
 	Name:        "process_list",
-	Description: "List running processes with their PID and memory usage (owner only)",
+	Description: "List running processes with their PID and memory usage (sudo only)",
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "filter", Description: "Optional name filter to search for specific processes (case-insensitive)", Required: false},
@@ -113,7 +113,7 @@ var ProcessList = &ToolDef{
 
 var KillProcess = &ToolDef{
 	Name:        "kill_process",
-	Description: "Kill a running process by PID or name (owner only)",
+	Description: "Kill a running process by PID or name (sudo only)",
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "pid", Description: "Process ID to kill", Required: false},
@@ -161,7 +161,7 @@ var KillProcess = &ToolDef{
 
 var ClipboardGet = &ToolDef{
 	Name:        "clipboard_get",
-	Description: "Read the current clipboard contents (owner only)",
+	Description: "Read the current clipboard contents (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]string) string {
@@ -191,7 +191,7 @@ var ClipboardGet = &ToolDef{
 
 var ClipboardSet = &ToolDef{
 	Name:        "clipboard_set",
-	Description: "Copy text to the clipboard (owner only)",
+	Description: "Copy text to the clipboard (sudo only)",
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "text", Description: "Text to copy to clipboard", Required: true},
@@ -222,7 +222,7 @@ var ClipboardSet = &ToolDef{
 
 var UpdateClaw = &ToolDef{
 	Name:        "update_claw",
-	Description: "Update ApexClaw. Uses git pull/build if in a git repo, otherwise tells you how to update. (owner only)",
+	Description: "Update ApexClaw. Uses git pull/build if in a git repo, otherwise tells you how to update. (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]string) string {
@@ -273,7 +273,7 @@ var UpdateClaw = &ToolDef{
 
 var RestartClaw = &ToolDef{
 	Name:        "restart_claw",
-	Description: "Restarts the ApexClaw process (owner only)",
+	Description: "Restarts the ApexClaw process (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]string) string {
@@ -305,7 +305,7 @@ var RestartClaw = &ToolDef{
 
 var KillClaw = &ToolDef{
 	Name:        "kill_claw",
-	Description: "Immediately shuts down the ApexClaw process (owner only)",
+	Description: "Immediately shuts down the ApexClaw process (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]string) string {
