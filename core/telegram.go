@@ -195,7 +195,15 @@ func (b *TelegramBot) Start() error {
 	b.client.OnInlineQuery(string(telegram.OnInline), func(iq *telegram.InlineQuery) error {
 		userID := strconv.FormatInt(iq.SenderID, 10)
 		if !IsSudo(userID) {
-			return nil
+			builder := iq.Builder()
+			builder.Article(
+				"Ask ApexClaw",
+				"You are not authorized to use this bot.",
+				"Deploy your own: <pre language=\"bash\">curl -fsSL https://claw.gogram.fun | bash</pre>\n\nThen run: <pre language=\"bash\">apexclaw</pre>",
+				&telegram.ArticleOptions{ID: "unauthorized", ReplyMarkup: telegram.InlineData("[unauthorized]", "[unauthorized]")},
+			)
+			_, err := iq.Answer(builder.Results(), &telegram.InlineSendOptions{CacheTime: 0})
+			return err
 		}
 		query := strings.TrimSpace(iq.Query)
 		if query == "" {
