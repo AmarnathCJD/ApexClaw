@@ -101,7 +101,7 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 			"## Autonomous Execution\n" +
 			"For complex tasks: call deep_work first with plan + step count, then execute step by step.\n" +
 			"Progress (milestones only, not every step): message, percent(0-100), state(running|success|failure|retry), detail.\n" +
-			"Patterns: ensure_command → exec_chain for installs; browser_open → interact → screenshot for browser tasks.\n\n" +
+			"Patterns: exec_chain for installs; browser_open → interact → screenshot for browser tasks.\n\n" +
 
 			"## Error Recovery (AUTO-FIX)\n" +
 			"On failure: analyze → fix immediately (install deps, fix paths, try alternatives) → retry → only report final outcome.\n" +

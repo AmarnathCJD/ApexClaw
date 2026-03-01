@@ -20,7 +20,6 @@ type ToolArg struct {
 var All = []*ToolDef{
 	Exec,
 	ExecChain,
-	EnsureCommand,
 	RunPython,
 
 	DeepWork,
