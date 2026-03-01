@@ -96,7 +96,7 @@ var TextToSpeech = &ToolDef{
 		}
 
 		caption := fmt.Sprintf("🔊 %s [%s]", truncateTTS(text, 60), strings.ToUpper(lang))
-		if result := SendTGFileFn(fmt.Sprintf("%d", chatID), tmpPath, caption); result != "" {
+		if result := SendTGFileFn(fmt.Sprintf("%d", chatID), tmpPath, caption, true); result != "" {
 			return fmt.Sprintf("Error sending audio: %s", result)
 		}
 

@@ -13,7 +13,8 @@ import (
 )
 
 // TGSendFile sends a file to a Telegram chat (accepts peer string: ID, username, etc.)
-func TGSendFile(peer string, filePath, caption string) string {
+// forceDocument=true sends as a document; false sends as media (photo/video preview).
+func TGSendFile(peer string, filePath, caption string, forceDocument bool) string {
 	if heartbeatTGClient == nil {
 		return "Error: Telegram client not ready"
 	}
@@ -23,7 +24,7 @@ func TGSendFile(peer string, filePath, caption string) string {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
 
-	opts := &telegram.MediaOptions{ForceDocument: true}
+	opts := &telegram.MediaOptions{ForceDocument: forceDocument}
 	if caption != "" {
 		opts.Caption = caption
 	}
@@ -85,6 +86,34 @@ func TGSendMessage(peer string, text string) string {
 		return fmt.Sprintf("Error sending message: %v", err)
 	}
 	return ""
+}
+
+// tgSendRaw sends a message to a chat by int64 ID and returns the message ID (0 on error).
+func tgSendRaw(chatID int64, text string) int32 {
+	if heartbeatTGClient == nil {
+		return 0
+	}
+	msg, err := heartbeatTGClient.SendMessage(chatID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
+	if err != nil || msg == nil {
+		return 0
+	}
+	return msg.ID
+}
+
+// tgEditRaw edits a message in a chat by int64 ID.
+func tgEditRaw(chatID int64, msgID int32, text string) {
+	if heartbeatTGClient == nil {
+		return
+	}
+	heartbeatTGClient.EditMessage(chatID, msgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
+}
+
+// tgDeleteRaw deletes a message in a chat by int64 ID.
+func tgDeleteRaw(chatID int64, msgID int32) {
+	if heartbeatTGClient == nil {
+		return
+	}
+	heartbeatTGClient.DeleteMessages(chatID, []int32{msgID})
 }
 
 // TGSendPhotoURL sends a photo from URL
@@ -687,4 +716,175 @@ func TGGetProfilePhotos(peer string, limit int) string {
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// TGSendLocation sends a geo location message
+func TGSendLocation(peer string, lat, long float64) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving peer: %v", err)
+	}
+	_, err = heartbeatTGClient.SendMedia(chatID, &telegram.InputMediaGeoPoint{
+		GeoPoint: &telegram.InputGeoPointObj{Lat: lat, Long: long},
+	}, &telegram.MediaOptions{})
+	if err != nil {
+		return fmt.Sprintf("Error sending location: %v", err)
+	}
+	return fmt.Sprintf("Sent location (%.6f, %.6f)", lat, long)
+}
+
+// TGSendAlbum sends multiple media files as an album
+func TGSendAlbum(peer string, paths []string, caption string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving peer: %v", err)
+	}
+	opts := &telegram.MediaOptions{}
+	if caption != "" {
+		opts.Caption = caption
+	}
+	if _, err := heartbeatTGClient.SendAlbum(chatID, paths, opts); err != nil {
+		return fmt.Sprintf("Error sending album: %v", err)
+	}
+	return fmt.Sprintf("Sent album (%d files)", len(paths))
+}
+
+// TGGetFile downloads a file from a message and returns the local path
+func TGGetFile(peer string, msgID int32, savePath string) string {
+	path, err := TGDownloadMedia(peer, msgID, savePath)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	return path
+}
+
+// TGBanUser bans a user from a group/channel
+func TGBanUser(peer string, userIDStr string, deleteHistory bool, untilDate int32) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving chat: %v", err)
+	}
+	userPeer, err := heartbeatTGClient.ResolvePeer(userIDStr)
+	if err != nil {
+		return fmt.Sprintf("Error resolving user: %v", err)
+	}
+	rights := &telegram.ChatBannedRights{
+		ViewMessages: true,
+		UntilDate:    untilDate,
+	}
+	_, err = heartbeatTGClient.EditBanned(chatID, userPeer, &telegram.BannedOptions{
+		Rights: rights,
+		Revoke: deleteHistory,
+	})
+	if err != nil {
+		return fmt.Sprintf("Error banning: %v", err)
+	}
+	return fmt.Sprintf("Banned user %s", userIDStr)
+}
+
+// TGMuteUser restricts a user from sending messages
+func TGMuteUser(peer string, userIDStr string, untilDate int32) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving chat: %v", err)
+	}
+	userPeer, err := heartbeatTGClient.ResolvePeer(userIDStr)
+	if err != nil {
+		return fmt.Sprintf("Error resolving user: %v", err)
+	}
+	rights := &telegram.ChatBannedRights{
+		SendMessages: true,
+		UntilDate:    untilDate,
+	}
+	_, err = heartbeatTGClient.EditBanned(chatID, userPeer, &telegram.BannedOptions{
+		Rights: rights,
+	})
+	if err != nil {
+		return fmt.Sprintf("Error muting: %v", err)
+	}
+	return fmt.Sprintf("Muted user %s", userIDStr)
+}
+
+// TGKickUser removes a user from a group (kick = ban then unban so they can rejoin)
+func TGKickUser(peer string, userIDStr string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving chat: %v", err)
+	}
+	userPeer, err := heartbeatTGClient.ResolvePeer(userIDStr)
+	if err != nil {
+		return fmt.Sprintf("Error resolving user: %v", err)
+	}
+	if _, err := heartbeatTGClient.KickParticipant(chatID, userPeer); err != nil {
+		return fmt.Sprintf("Error kicking: %v", err)
+	}
+	return fmt.Sprintf("Kicked user %s", userIDStr)
+}
+
+// TGPromoteAdmin promotes a user to admin with specific rights
+func TGPromoteAdmin(peer string, userIDStr string, rights map[string]bool, title string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving chat: %v", err)
+	}
+	userPeer, err := heartbeatTGClient.ResolvePeer(userIDStr)
+	if err != nil {
+		return fmt.Sprintf("Error resolving user: %v", err)
+	}
+	adminRights := &telegram.ChatAdminRights{
+		ChangeInfo:     rights["change_info"],
+		PostMessages:   rights["post_messages"],
+		EditMessages:   rights["edit_messages"],
+		DeleteMessages: rights["delete_messages"],
+		BanUsers:       rights["ban_users"],
+		InviteUsers:    rights["invite_users"],
+		PinMessages:    rights["pin_messages"],
+		ManageCall:     rights["manage_call"],
+		Other:          rights["other"],
+	}
+	if _, err = heartbeatTGClient.EditAdmin(chatID, userPeer, &telegram.AdminOptions{
+		Rights:  adminRights,
+		Rank:    title,
+		IsAdmin: true,
+	}); err != nil {
+		return fmt.Sprintf("Error promoting: %v", err)
+	}
+	return fmt.Sprintf("Promoted %s to admin", userIDStr)
+}
+
+// TGDemoteAdmin removes admin rights from a user
+func TGDemoteAdmin(peer string, userIDStr string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	chatID, err := heartbeatTGClient.ResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving chat: %v", err)
+	}
+	userPeer, err := heartbeatTGClient.ResolvePeer(userIDStr)
+	if err != nil {
+		return fmt.Sprintf("Error resolving user: %v", err)
+	}
+	if _, err = heartbeatTGClient.EditAdmin(chatID, userPeer, &telegram.AdminOptions{IsAdmin: false}); err != nil {
+		return fmt.Sprintf("Error demoting: %v", err)
+	}
+	return fmt.Sprintf("Demoted %s from admin", userIDStr)
 }

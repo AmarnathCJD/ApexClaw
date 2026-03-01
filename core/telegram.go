@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/big"
 	"net/http"
 	"os"
@@ -46,6 +47,85 @@ func getTelegramContext(userID string) map[string]any {
 		return ctx
 	}
 	return nil
+}
+
+func formatTGContext(ctx map[string]any) string {
+	if len(ctx) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[TG Context:")
+	if v, ok := ctx["sender_id"]; ok {
+		fmt.Fprintf(&sb, " sender_id=%v", v)
+	}
+	if v, ok := ctx["telegram_id"]; ok {
+		fmt.Fprintf(&sb, " | chat_id=%v", v)
+	}
+	if v, ok := ctx["msg_id"]; ok {
+		fmt.Fprintf(&sb, " | msg_id=%v", v)
+	}
+	if v, ok := ctx["group_id"]; ok {
+		fmt.Fprintf(&sb, " | group_id=%v", v)
+	}
+	if v, ok := ctx["reply_id"]; ok {
+		fmt.Fprintf(&sb, " | reply_id=%v", v)
+	}
+	if v, ok := ctx["reply_sender_id"]; ok {
+		fmt.Fprintf(&sb, " | reply_sender_id=%v", v)
+	}
+	if v, ok := ctx["reply_text"]; ok && v != "" {
+		text := fmt.Sprintf("%v", v)
+		if len(text) > 100 {
+			text = text[:100] + "..."
+		}
+		fmt.Fprintf(&sb, " | reply_text=%q", text)
+	}
+	if v, ok := ctx["reply_has_file"]; ok && v == true {
+		sb.WriteString(" | reply_has_file=true")
+		if fn, ok2 := ctx["reply_filename"]; ok2 {
+			fmt.Fprintf(&sb, " | reply_filename=%v", fn)
+		}
+	}
+	if v, ok := ctx["file_name"]; ok {
+		fmt.Fprintf(&sb, " | file_name=%v", v)
+	}
+	if v, ok := ctx["file_path"]; ok {
+		fmt.Fprintf(&sb, " | file_path=%v", v)
+	}
+	if v, ok := ctx["callback_data"]; ok {
+		fmt.Fprintf(&sb, " | callback_data=%v", v)
+	}
+	sb.WriteString("]")
+	return sb.String()
+}
+
+func buildMsgContext(m *telegram.NewMessage, userID string, extras map[string]any) map[string]any {
+	ctx := map[string]any{
+		"sender_id":       userID,
+		"telegram_id":     m.ChatID(),
+		"msg_id":          int64(m.ID),
+		"is_private_chat": m.IsPrivate(),
+		"chat_type":       "private",
+	}
+	if !m.IsPrivate() {
+		ctx["chat_type"] = "group/channel"
+		ctx["group_id"] = m.ChatID()
+	}
+	if m.IsReply() {
+		ctx["reply_id"] = int64(m.ReplyToMsgID())
+		if r, err := m.GetReplyMessage(); err == nil {
+			ctx["reply_sender_id"] = fmt.Sprintf("%d", r.SenderID())
+			if r.IsMedia() {
+				ctx["reply_has_file"] = true
+				ctx["replied_id"] = int64(r.ID)
+				if r.File != nil && r.File.Name != "" {
+					ctx["reply_filename"] = r.File.Name
+				}
+			}
+		}
+	}
+	maps.Copy(ctx, extras)
+	return ctx
 }
 
 func NewTelegramBot() (*TelegramBot, error) {
@@ -103,7 +183,6 @@ func (b *TelegramBot) Start() error {
 		if !m.IsMedia() {
 			return nil
 		}
-
 		if m.Voice() != nil || m.Audio() != nil {
 			return b.handleVoice(m)
 		}
@@ -123,31 +202,33 @@ func (b *TelegramBot) Start() error {
 		callbackData := c.DataString()
 		log.Printf("[TG] callback from %s: %q", userID, callbackData)
 
-		tgCtx := map[string]any{
-			"owner_id":      userID,
-			"sender_id":     userID,
-			"my_id":         userID,
-			"chat_id":       c.ChatID,
-			"telegram_id":   c.ChatID,
-			"message_id":    int64(c.MessageID),
-			"callback_data": callbackData,
+		ctx := map[string]any{
+			"sender_id":       userID,
+			"telegram_id":     c.ChatID,
+			"msg_id":          int64(c.MessageID),
+			"callback_data":   callbackData,
+			"is_private_chat": c.IsPrivate(),
+			"chat_type":       "private",
 		}
-		if c.ChatID < 0 {
-			tgCtx["group_id"] = c.ChatID
+		if !c.IsPrivate() {
+			ctx["chat_type"] = "group/channel"
+			ctx["group_id"] = c.ChatID
 		}
-		setTelegramContext(userID, tgCtx)
+		setTelegramContext(userID, ctx)
+		cbCtxPrefix := formatTGContext(ctx)
+		cbMsg := fmt.Sprintf("[Button clicked: %s]", callbackData)
+		if cbCtxPrefix != "" {
+			cbMsg = cbCtxPrefix + "\n" + cbMsg
+		}
 
 		session := GetOrCreateAgentSession(userID)
-
-		onChunk, flush := b.newStreamHandler(c.ChatID, int64(c.MessageID))
-		_, err := session.RunStream(context.Background(), userID, fmt.Sprintf("[Button clicked: %s]", callbackData), onChunk)
-		flush()
+		onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), userID)
+		_, err := session.RunStream(context.Background(), userID, cbMsg, onChunk)
+		done()
 
 		if err != nil {
 			c.Answer(fmt.Sprintf("Error: %v", err), &telegram.CallbackOptions{Alert: true})
-			return nil
 		}
-
 		return nil
 	})
 
@@ -155,67 +236,41 @@ func (b *TelegramBot) Start() error {
 }
 
 func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
-	userID := strconv.FormatInt(m.Sender.ID, 10)
+	userID := strconv.FormatInt(m.SenderID(), 10)
 	if !IsSudo(userID) {
 		return nil
 	}
 
 	if !m.IsPrivate() {
-		var isMentioned = false
-		if strings.Contains(strings.ToLower(text), "apex") {
-			isMentioned = true
-		}
-
-		if m.IsReply() {
-			r, err := m.GetReplyMessage()
-			if err != nil {
-				return nil
-			}
-			if r.SenderID() == b.client.Me().ID {
-				isMentioned = true
+		mentioned := strings.Contains(strings.ToLower(text), "apex")
+		if !mentioned && m.IsReply() {
+			if r, err := m.GetReplyMessage(); err == nil && r.SenderID() == b.client.Me().ID {
+				mentioned = true
 			}
 		}
-
-		if !isMentioned {
+		if !mentioned {
 			return nil
 		}
 	}
 
 	log.Printf("[TG] msg from %s (chat %d): %q", userID, m.ChatID(), truncate(text, 80))
-
-	tgCtx := map[string]any{
-		"owner_id":        userID,
-		"sender_id":       userID,
-		"my_id":           userID,
-		"chat_id":         m.ChatID(),
-		"telegram_id":     m.ChatID(),
-		"message_id":      int64(m.ID),
-		"is_private_chat": m.IsPrivate(),
-		"chat_type":       "private",
+	msgCtxData := buildMsgContext(m, userID, nil)
+	setTelegramContext(userID, msgCtxData)
+	ctxPrefix := formatTGContext(msgCtxData)
+	if ctxPrefix != "" {
+		text = ctxPrefix + "\n" + text
 	}
-	if !m.IsPrivate() {
-		tgCtx["chat_type"] = "group/channel"
-		tgCtx["group_id"] = m.ChatID()
-	}
-	if m.IsReply() {
-		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
-		if r, err := m.GetReplyMessage(); err == nil {
-			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
-		}
-	}
-	setTelegramContext(userID, tgCtx)
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	b.sendTyping(m)
 	session := GetOrCreateAgentSession(userID)
-
-	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
+	onChunk, _, done := b.newStreamHandler(m.ChatID(), int64(m.ID), userID)
 	result, err := session.RunStream(timeoutCtx, userID, text, onChunk)
 
 	if err != nil {
-		flush()
+		done()
 		log.Printf("[TG] agent error for %s: %v", userID, err)
 		_, _ = m.Reply("⚠️ Something went wrong. Please try again.")
 		return nil
@@ -224,65 +279,17 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	result = cleanResultForTelegram(result)
 
 	if strings.Contains(result, "[MAX_ITERATIONS]") {
-		flush()
-		explanation := strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1)
-		explanation = strings.TrimSpace(explanation)
-
+		done()
+		explanation := strings.TrimSpace(strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1))
 		if explanation == "" {
 			explanation = "Hit iteration limit before completing the task."
 		}
-
-		isFailure := strings.Contains(explanation, "failed") || strings.Contains(explanation, "error") || strings.Contains(explanation, "Failed")
-		if isFailure {
-			reason := explanation
-			lines := strings.Split(reason, "\n")
-			for i, line := range lines {
-				if strings.Contains(line, "trying") || strings.Contains(line, "Trying") {
-					reason = strings.Join(lines[:i+1], "\n")
-					break
-				}
-			}
-			msg := reason
-			_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
-		} else {
-			msg := "⚠️ <b>Task incomplete:</b>\n\n" + explanation
-			_, _ = m.Reply(msg, &telegram.SendOptions{ParseMode: telegram.HTML})
-		}
+		_, _ = m.Reply(explanation, &telegram.SendOptions{ParseMode: telegram.HTML})
 		return nil
 	}
 
-	flush()
+	done()
 	return nil
-}
-
-func cleanResultForTelegram(result string) string {
-	lines := strings.Split(result, "\n")
-	var cleaned []string
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "PROGRESS:") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "{\"message\":") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "<tool_call>") {
-			continue
-		}
-		if strings.Contains(trimmed, "</tool_call>") {
-			continue
-		}
-		if trimmed == "" {
-			continue
-		}
-
-		cleaned = append(cleaned, line)
-	}
-
-	result = strings.Join(cleaned, "\n")
-	result = strings.TrimSpace(result)
-	return result
 }
 
 func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
@@ -319,65 +326,45 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 	}
 
 	log.Printf("[TG] transcribed: %q", transcribed)
-
-	tgCtx := map[string]any{
-		"owner_id":    userID,
-		"sender_id":   userID,
-		"my_id":       userID,
-		"chat_id":     m.ChatID(),
-		"telegram_id": m.ChatID(),
-		"message_id":  int64(m.ID),
+	voiceMsgCtx := buildMsgContext(m, userID, nil)
+	setTelegramContext(userID, voiceMsgCtx)
+	voiceCtxPrefix := formatTGContext(voiceMsgCtx)
+	if voiceCtxPrefix != "" {
+		transcribed = voiceCtxPrefix + "\n" + transcribed
 	}
-	if m.IsReply() {
-		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
-		if r, err := m.GetReplyMessage(); err == nil {
-			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
-		}
-	}
-	setTelegramContext(userID, tgCtx)
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
-
-	onChunk, flush := b.newStreamHandler(m.ChatID(), int64(m.ID))
+	onChunk, _, done := b.newStreamHandler(m.ChatID(), int64(m.ID), userID)
 	_, err = session.RunStream(timeoutCtx, userID, transcribed, onChunk)
-
-	flush()
+	done()
 
 	if err != nil {
 		log.Printf("[TG] agent error for voice: %v", err)
 		_, _ = m.Reply("⚠️ Something went wrong processing your voice message.")
-		return nil
 	}
 	return nil
 }
 
 func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 	userID := strconv.FormatInt(m.Sender.ID, 10)
-
 	if !IsSudo(userID) {
 		return nil
 	}
-
 	if !m.IsPrivate() {
-		if m.IsReply() {
-			r, err := m.GetReplyMessage()
-			if err != nil {
-				return nil
-			}
-			if r.SenderID() != b.client.Me().ID {
-				return nil
-			}
-		} else {
+		if !m.IsReply() {
+			return nil
+		}
+		r, err := m.GetReplyMessage()
+		if err != nil || r.SenderID() != b.client.Me().ID {
 			return nil
 		}
 	}
 
-	var fileName = m.File.Name
-
-	log.Printf("[TG] file from %s (chat %d, type: %s)", userID, m.ChatID(), fileName)
+	fileName := m.File.Name
+	log.Printf("[TG] file from %s (chat %d, name: %s)", userID, m.ChatID(), fileName)
 	b.sendTyping(m)
 
 	filePath, err := m.Download()
@@ -393,47 +380,61 @@ func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 		caption = fmt.Sprintf("Process this file: %s", fileName)
 	}
 
-	tgCtx := map[string]any{
-		"owner_id":    userID,
-		"sender_id":   userID,
-		"my_id":       userID,
-		"chat_id":     m.ChatID(),
-		"telegram_id": m.ChatID(),
-		"message_id":  int64(m.ID),
-		"file_name":   fileName,
-		"file_path":   filePath,
+	fileMsgCtx := buildMsgContext(m, userID, map[string]any{
+		"file_name": fileName,
+		"file_path": filePath,
+	})
+	setTelegramContext(userID, fileMsgCtx)
+	fileCtxPrefix := formatTGContext(fileMsgCtx)
+	if fileCtxPrefix != "" {
+		caption = fileCtxPrefix + "\n" + caption
 	}
-	if m.ChatID() < 0 {
-		tgCtx["group_id"] = m.ChatID()
-	}
-	if m.IsReply() {
-		tgCtx["reply_to_msg_id"] = int64(m.ReplyToMsgID())
-		if r, err := m.GetReplyMessage(); err == nil {
-			tgCtx["replied_to_user_id"] = fmt.Sprintf("%d", r.SenderID())
-		}
-	}
-	setTelegramContext(userID, tgCtx)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
-
-	_, err = session.Run(ctx, userID, caption)
-
-	if err != nil {
+	if _, err = session.Run(ctx, userID, caption); err != nil {
 		log.Printf("[TG] agent error for file: %v", err)
 		_, _ = m.Reply("⚠️ Something went wrong processing the file.")
-		return nil
 	}
 	return nil
+}
+
+func cleanResultForTelegram(result string) string {
+	// Strip \x00PROGRESS:...\x00 blocks first
+	for {
+		start := strings.Index(result, "\x00PROGRESS:")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start+1:], "\x00")
+		if end == -1 {
+			result = result[:start]
+			break
+		}
+		result = result[:start] + result[start+1+end+1:]
+	}
+	lines := strings.Split(result, "\n")
+	var cleaned []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "PROGRESS:") ||
+			strings.HasPrefix(trimmed, "{\"message\":") ||
+			strings.HasPrefix(trimmed, "<tool_call>") ||
+			strings.Contains(trimmed, "</tool_call>") ||
+			trimmed == "" {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 func (b *TelegramBot) safeSend(m *telegram.NewMessage, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-
 	text = telegram.HTMLToMarkdownV2(text)
 	if _, err := m.Reply(text, &telegram.SendOptions{ParseMode: telegram.HTML}); err != nil {
 		plain := strings.NewReplacer(
@@ -448,9 +449,75 @@ func (b *TelegramBot) sendTyping(m *telegram.NewMessage) {
 	b.client.SendAction(m.ChatID(), "typing")
 }
 
+func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
+	if replyToMsgID > 0 {
+		opts.ReplyID = int32(replyToMsgID)
+	}
+	if _, err := b.client.SendMessage(chatID, text, opts); err != nil {
+		plain := strings.NewReplacer(
+			"<b>", "", "</b>", "", "<i>", "", "</i>", "",
+			"<code>", "", "</code>", "", "<pre>", "", "</pre>", "",
+		).Replace(text)
+		opts.ParseMode = ""
+		b.client.SendMessage(chatID, plain, opts)
+	}
+}
+
+// newStreamHandler returns (onChunk, flush, done).
+// flush: sends buffered text mid-stream (does NOT clear progress).
+// done: final call — clears progress message then flushes remaining buffer.
+func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderID string) (func(string), func(), func()) {
+	var buf strings.Builder
+
+	flush := func() {
+		if buf.Len() == 0 {
+			return
+		}
+		b.safeSendText(chatID, replyToMsgID, buf.String())
+		buf.Reset()
+	}
+
+	done := func() {
+		clearProgressMsg(senderID)
+		flush()
+	}
+
+	onChunk := func(chunk string) {
+		if strings.HasPrefix(chunk, "__TOOL_CALL:") || strings.HasPrefix(chunk, "__TOOL_RESULT:") {
+			return
+		}
+		// Strip \x00PROGRESS:...\x00 blocks
+		for {
+			start := strings.Index(chunk, "\x00PROGRESS:")
+			if start == -1 {
+				break
+			}
+			end := strings.Index(chunk[start+1:], "\x00")
+			if end == -1 {
+				chunk = chunk[:start]
+				break
+			}
+			chunk = chunk[:start] + chunk[start+1+end+1:]
+		}
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			return
+		}
+		buf.WriteString(chunk)
+		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
+			flush()
+		}
+	}
+
+	return onChunk, flush, done
+}
+
 func transcribeAudio(filePath string) (string, error) {
 	flacPath := filePath + ".flac"
-
 	cmd := exec.Command("ffmpeg", "-y", "-i", filePath, "-ar", "16000", "-ac", "1", "-c:a", "flac", flacPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("ffmpeg conversion failed: %v\nOutput: %s", err, string(out))
@@ -499,7 +566,6 @@ func transcribeAudio(filePath string) (string, error) {
 			}
 		}
 	}
-
 	return "", fmt.Errorf("no transcript found in response: %s", string(bodyBytes))
 }
 
@@ -510,48 +576,7 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string) {
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
-	if replyToMsgID > 0 {
-		opts.ReplyID = int32(replyToMsgID)
-	}
-	if _, err := b.client.SendMessage(chatID, text, opts); err != nil {
-		plain := strings.NewReplacer(
-			"<b>", "", "</b>", "", "<i>", "", "</i>", "",
-			"<code>", "", "</code>", "", "<pre>", "", "</pre>", "",
-		).Replace(text)
-		opts.ParseMode = ""
-		b.client.SendMessage(chatID, plain, opts)
-	}
-}
-
-func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64) (func(string), func()) {
-	var buf strings.Builder
-
-	flush := func() {
-		if buf.Len() == 0 {
-			return
-		}
-		b.safeSendText(chatID, replyToMsgID, buf.String())
-		buf.Reset()
-	}
-
-	onChunk := func(chunk string) {
-		if strings.HasPrefix(chunk, "__TOOL_CALL:") || strings.HasPrefix(chunk, "__TOOL_RESULT:") {
-			return
-		}
-
-		buf.WriteString(chunk)
-		if buf.Len() >= 800 || strings.Contains(chunk, "\n\n") {
-			flush()
-		}
-	}
-
-	return onChunk, flush
-}
+// ── Bot commands ──────────────────────────────────────────────────────────────
 
 func (b *TelegramBot) handleStart(m *telegram.NewMessage) error {
 	userID := strconv.FormatInt(m.SenderID(), 10)
@@ -642,8 +667,7 @@ func (b *TelegramBot) handleWebCode(m *telegram.NewMessage) error {
 	if !IsSudo(userID) {
 		return nil
 	}
-	parts := strings.Fields(m.Text())
-	return handleWebCodeCommand(m, parts)
+	return handleWebCodeCommand(m, strings.Fields(m.Text()))
 }
 
 func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
@@ -681,10 +705,7 @@ func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
 		envMap["WEB_LOGIN_CODE"] = newCode
 		envMap["WEB_FIRST_LOGIN"] = "false"
 		godotenv.Write(envMap, ".env")
-		_, err := m.Reply(fmt.Sprintf(
-			"✅ Web login code changed!\nOld: `%s`\nNew: `%s`",
-			oldCode, newCode,
-		))
+		_, err := m.Reply(fmt.Sprintf("✅ Web login code changed!\nOld: `%s`\nNew: `%s`", oldCode, newCode))
 		return err
 
 	case "random":
@@ -698,10 +719,7 @@ func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
 		envMap["WEB_LOGIN_CODE"] = newCode
 		envMap["WEB_FIRST_LOGIN"] = "false"
 		godotenv.Write(envMap, ".env")
-		_, err := m.Reply(fmt.Sprintf(
-			"🎲 Random web login code generated!\nOld: `%s`\nNew: `%s`",
-			oldCode, newCode,
-		))
+		_, err := m.Reply(fmt.Sprintf("🎲 Random web login code generated!\nOld: `%s`\nNew: `%s`", oldCode, newCode))
 		return err
 
 	default:
@@ -756,7 +774,6 @@ func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string)
 		_, err := m.Reply(fmt.Sprintf("Usage: %s <id/username> or reply to a message", cmd))
 		return err
 	}
-
 	if targetID == Cfg.OwnerID {
 		_, err := m.Reply("❌ That's the owner!")
 		return err
@@ -771,8 +788,7 @@ func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string)
 	newSudos := []string{}
 
 	if strings.Contains(cmd, "addsudo") {
-		found := slices.Contains(currentSudos, targetID)
-		if found {
+		if slices.Contains(currentSudos, targetID) {
 			_, err := m.Reply(fmt.Sprintf("✅ user <code>%s</code> is already a sudo user.", targetID), &telegram.SendOptions{ParseMode: telegram.HTML})
 			return err
 		}

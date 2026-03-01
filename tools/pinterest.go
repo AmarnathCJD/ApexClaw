@@ -399,7 +399,7 @@ var PinterestSearch = &ToolDef{
 			}
 
 			// Upload to Telegram
-			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption)
+			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption, false)
 
 			// Delete local file
 			_ = os.Remove(localPath)
@@ -504,7 +504,7 @@ var PinterestGetPin = &ToolDef{
 			}
 
 			// Upload to Telegram
-			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption)
+			result := SendTGFileFn(fmt.Sprintf("%d", chatID), localPath, caption, false)
 
 			// Delete local file
 			_ = os.Remove(localPath)

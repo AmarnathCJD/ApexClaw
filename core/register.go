@@ -1,11 +1,38 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"apexclaw/tools"
 )
+
+// progressState tracks the single live progress message per Telegram user.
+var (
+	progressMu   sync.Mutex
+	progressMsgs = make(map[string]*progressEntry)
+)
+
+type progressEntry struct {
+	chatID  int64
+	msgID   int32
+	sending bool // true while first send is in-flight, prevents duplicate sends
+}
+
+// clearProgressMsg deletes the live progress message for a user (call after final reply sent).
+func clearProgressMsg(senderID string) {
+	progressMu.Lock()
+	p, ok := progressMsgs[senderID]
+	if ok {
+		delete(progressMsgs, senderID)
+	}
+	progressMu.Unlock()
+	if ok && p.msgID > 0 {
+		tgDeleteRaw(p.chatID, p.msgID)
+	}
+}
 
 func GetTaskContext() map[string]any {
 	return nil
@@ -77,36 +104,46 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 			session.streamCallback(fmt.Sprintf("\x00PROGRESS:%s\x00", progressJSON))
 		}
 
-		// Send/Edit Telegram progress message
-		ctx := getTelegramContext(senderID)
-		if ctx != nil {
-			if chatID, ok := ctx["telegram_id"].(int64); ok {
-				// Build progress text without emoji
-				var text strings.Builder
-				fmt.Fprintf(&text, "[%s] %s", state, message)
-				if detail != "" && detail != "(no output)" {
-					lines := splitLines(detail, 4)
-					for _, line := range lines {
-						fmt.Fprintf(&text, "\n> %s", line)
-					}
-				}
+		// Edit-in-place Telegram progress message
+		tgCtx := getTelegramContext(senderID)
+		if tgCtx == nil {
+			return 0, nil
+		}
+		chatID, ok := tgCtx["telegram_id"].(int64)
+		if !ok {
+			return 0, nil
+		}
 
-				// Check if we have a progress message ID in context
-				progressMsgID := int32(0)
-				if msgID, ok := ctx["progress_message_id"].(int32); ok {
-					progressMsgID = msgID
-				}
-
-				// If we have a message ID, edit it; otherwise send new message
-				if progressMsgID > 0 {
-					_ = TGEditMessage(fmt.Sprintf("%d", chatID), progressMsgID, text.String())
-				} else {
-					// Send new message and store its ID for future edits
-					_ = TGSendMessage(fmt.Sprintf("%d", chatID), text.String())
-					// Note: TGSendMessage returns string, not message ID
-					// Progress message ID will be tracked differently if needed
-				}
+		var text strings.Builder
+		fmt.Fprintf(&text, "[%s] <b>%s</b>", state, escapeHTML(message))
+		if detail != "" && detail != "(no output)" {
+			lines := splitLines(detail, 3)
+			for _, line := range lines {
+				fmt.Fprintf(&text, "\n<code>%s</code>", escapeHTML(line))
 			}
+		}
+
+		progressMu.Lock()
+		p := progressMsgs[senderID]
+		if p != nil && (p.msgID > 0 || p.sending) && p.chatID == chatID {
+			msgID := p.msgID
+			progressMu.Unlock()
+			if msgID > 0 {
+				tgEditRaw(chatID, msgID, text.String())
+			}
+		} else {
+			entry := &progressEntry{chatID: chatID, sending: true}
+			progressMsgs[senderID] = entry
+			progressMu.Unlock()
+
+			newID := tgSendRaw(chatID, text.String())
+
+			progressMu.Lock()
+			if progressMsgs[senderID] == entry {
+				entry.msgID = newID
+				entry.sending = false
+			}
+			progressMu.Unlock()
 		}
 
 		return 0, nil
@@ -117,9 +154,10 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.SendTGMsgFn = TGSendMessage
 	tools.SendTGPhotoFn = TGSendPhoto
 	tools.SendTGPhotoURLFn = TGSendPhotoURL
-	tools.SendTGAlbumURLsFn = TGSendAlbumURLs
+	tools.SendTGAlbumFn = TGSendAlbum
 	tools.SetBotDpFn = TGSetBotDp
 	tools.TGDownloadMediaFn = TGDownloadMedia
+	tools.TGGetFileFn = TGGetFile
 	tools.TGGetChatInfoFn = TGGetChatInfo
 	tools.TGResolvePeerFn = TGResolvePeer
 	tools.TGForwardMsgFn = TGForwardMsg
@@ -127,7 +165,6 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.TGPinMsgFn = TGPinMsg
 	tools.TGUnpinMsgFn = TGUnpinMsg
 	tools.TGReactFn = TGReact
-	tools.TGGetReplyFn = TGGetReply
 	tools.TGGetMembersFn = TGGetMembers
 	tools.TGBroadcastFn = TGBroadcast
 	tools.TGGetMessageFn = TGGetMessage
@@ -135,6 +172,12 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.SendTGMessageWithButtonsFn = TGSendMessageWithButtons
 	tools.TGCreateInviteFn = TGCreateInvite
 	tools.TGGetProfilePhotosFn = TGGetProfilePhotos
+	tools.TGBanUserFn = TGBanUser
+	tools.TGMuteUserFn = TGMuteUser
+	tools.TGKickUserFn = TGKickUser
+	tools.TGPromoteAdminFn = TGPromoteAdmin
+	tools.TGDemoteAdminFn = TGDemoteAdmin
+	tools.TGSendLocationFn = TGSendLocation
 }
 
 func bridgeArgs(args []tools.ToolArg) []ToolArg {
@@ -155,6 +198,42 @@ func repeatStr(s string, n int) string {
 		result.WriteString(s)
 	}
 	return result.String()
+}
+
+// autoProgress fires a single-line progress update for automatic tool-execution tracking.
+// Skips tools that manage progress themselves (progress, deep_work).
+func autoProgress(senderID, toolName, argsJSON, state string) {
+	if tools.SendProgressFn == nil {
+		return
+	}
+	switch toolName {
+	case "progress", "deep_work":
+		return
+	}
+
+	// Extract a short detail label from the most meaningful arg
+	detail := ""
+	var args map[string]string
+	if json.Unmarshal([]byte(argsJSON), &args) == nil {
+		for _, key := range []string{"cmd", "url", "path", "query", "peer", "text", "file_path", "name"} {
+			if v := args[key]; v != "" {
+				if len(v) > 80 {
+					v = v[:80] + "..."
+				}
+				detail = v
+				break
+			}
+		}
+	}
+
+	tools.SendProgressFn(senderID, 0, toolName, state, detail)
+}
+
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 func escapeJSON(s string) string {

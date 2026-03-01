@@ -64,7 +64,7 @@ var DocumentCompress = &ToolDef{
 		}
 
 		if _, err := os.Stat(output); err != nil {
-			return fmt.Sprintf("Error: compressed PDF not created")
+			return "Error: compressed PDF not created"
 		}
 
 		return fmt.Sprintf("✓ PDF compressed: %s", output)
@@ -105,10 +105,8 @@ var DocumentWatermark = &ToolDef{
 		}
 		defer os.RemoveAll(tmpDir)
 
-		// Use gs to overlay watermark via PostScript
 		opacity := "0.5"
 		if op := strings.TrimSpace(args["opacity"]); op != "" {
-			// Normalize opacity 0-100 to 0-1
 			var opVal int
 			if _, err := fmt.Sscanf(op, "%d", &opVal); err == nil {
 				if opVal >= 0 && opVal <= 100 {
@@ -120,7 +118,7 @@ var DocumentWatermark = &ToolDef{
 		psFile := filepath.Join(tmpDir, "watermark.ps")
 		psContent := fmt.Sprintf(`
 /textFont /Helvetica findfont 72 scalefont def
-/opacity %.2f def
+/opacity %s def
 
 %s setfont
 /textString (%s) def
@@ -196,7 +194,7 @@ var MarkdownToPDF = &ToolDef{
 		}
 
 		if _, err := os.Stat(output); err != nil {
-			return fmt.Sprintf("Error: PDF not created")
+			return "Error: PDF not created"
 		}
 
 		return fmt.Sprintf("✓ Markdown converted to PDF: %s", output)

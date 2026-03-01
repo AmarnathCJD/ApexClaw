@@ -49,8 +49,8 @@ func NewWithCustomDialer(dialer *net.Dialer) *Client {
 }
 
 const (
-	maxRetries    = 3
-	retryBaseMs   = 1000
+	maxRetries  = 3
+	retryBaseMs = 1000
 )
 
 var retryableHTTPCodes = map[int]bool{429: true, 500: true, 502: true, 503: true}
@@ -65,7 +65,7 @@ func (c *Client) SendWithFiles(ctx context.Context, model string, messages []Mes
 
 func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if attempt > 0 {
 			delay := time.Duration(retryBaseMs*(1<<uint(attempt-1))) * time.Millisecond
 			select {

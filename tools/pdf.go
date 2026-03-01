@@ -465,18 +465,17 @@ var LaTeXEdit = &ToolDef{
 
 		var output string
 
-		if mode == "" || mode == "create" {
-			// Create or overwrite
+		switch mode {
+		case "", "create":
 			output = latexCode
-		} else if mode == "append" {
-			// Read existing and append
+		case "append":
 			existing, err := os.ReadFile(path)
 			if err == nil {
 				output = string(existing) + "\n" + latexCode
 			} else {
 				output = latexCode
 			}
-		} else if mode == "replace" {
+		case "replace":
 			// Read existing and replace
 			existing, err := os.ReadFile(path)
 			if err != nil {
@@ -488,7 +487,7 @@ var LaTeXEdit = &ToolDef{
 				return "Error: search_text required for replace mode"
 			}
 			output = strings.ReplaceAll(string(existing), searchText, replaceText)
-		} else {
+		default:
 			return fmt.Sprintf("Error: unsupported mode '%s'. Use: create, append, or replace", mode)
 		}
 

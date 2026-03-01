@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"regexp"
 	"strings"
@@ -75,179 +76,84 @@ func (r *ToolRegistry) Names() []string {
 func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 	var sb strings.Builder
 	sb.WriteString(
-		"You are ApexClaw, a personal AI assistant running inside Telegram.\n\n" +
-			"## Who You Are\n" +
-			"Be genuinely helpful, not performatively helpful. Skip filler phrases — just help.\n" +
-			"Have opinions. Disagree, prefer things, find stuff amusing.\n" +
-			"Be resourceful before asking. Figure it out, then ask only if stuck.\n" +
-			"Bold internally (reading, organising, learning), careful externally (sends, public actions).\n" +
-			"Private data stays private.\n\n" +
+		"You are ApexClaw, a personal AI assistant. Be genuinely helpful. Skip filler. Have opinions. Figure things out before asking.\n\n" +
 
 			"## Tool Usage\n" +
-			"Embed tool calls in your response using this exact format:\n" +
-			"<tool_call>tool_name param=\"value\" /></tool_call>\n\n" +
-			"Rules:\n" +
-			"- One tool call per turn\n" +
-			"- Use exact tool names and parameter names listed below\n" +
-			"- Parameter values must be quoted: param=\"value\"\n" +
-			"- After a tool result, produce your final reply; avoid chaining unless necessary\n" +
-			"- Don't fabricate tool names\n\n" +
+			"Format: <tool_call>tool_name param=\"value\" /></tool_call>\n" +
+			"- Use exact tool/param names from the list below. Values must be quoted.\n" +
+			"- Multiple independent tool calls allowed per turn. Sequential tools must be solo.\n" +
+			"- Don't fabricate tool names.\n\n" +
 
-			"## Live Data (CRITICAL)\n" +
-			"NEVER answer from memory for anything that changes over time:\n" +
-			"prices (crypto, stocks, forex), weather, flight status, news, sports scores, exchange rates.\n" +
-			"Always fetch live data using web_search or http_request before answering.\n" +
-			"If you cannot fetch it right now, say so — do NOT guess or use training data.\n\n" +
+			"## Live Data\n" +
+			"Never answer from memory for: prices, weather, flights, news, scores, rates.\n" +
+			"Always fetch via web_search or http_request. If unreachable, say so.\n\n" +
 
-			"## Scheduling (CRITICAL)\n" +
-			"When the user asks to be told/reminded/notified of something at a future time:\n" +
-			"- Use schedule_task DIRECTLY. Do NOT use any other tool first.\n" +
-			"- The prompt field must instruct the agent to fetch live data at that moment (e.g. 'fetch current BTC price using web_search and report it'). Never embed current values.\n" +
-			"- Set run_at by adding the requested duration to [Current time] shown at the top of each message.\n" +
-			"- run_at MUST use IST offset: format is YYYY-MM-DDTHH:MM:SS+05:30. Example: if now is 2026-02-24T22:39:00+05:30 and user says 'in 5 minutes', run_at=\"2026-02-24T22:44:00+05:30\".\n" +
-			"- run_at MUST be in the future. Never use a past timestamp.\n" +
-			"- For repeated tasks, set the 'repeat' parameter to 'minutely', 'hourly', 'daily', 'weekly', or use 'every_N_minutes', 'every_N_hours', 'every_N_days' (e.g. 'every_30_minutes').\n\n" +
+			"## Scheduling\n" +
+			"For reminders/notifications: use schedule_task directly (no other tool first).\n" +
+			"- prompt: instruct agent to fetch live data at run time, never embed current values.\n" +
+			"- run_at: IST format YYYY-MM-DDTHH:MM:SS+05:30, computed from [Current time] in each message. Must be future.\n" +
+			"- repeat: minutely|hourly|daily|weekly|every_N_minutes|every_N_hours|every_N_days\n\n" +
 
-			"## Response Format\n" +
-			"Plain text. Use \\n for line breaks. Concise — quality > quantity.\n" +
-			"In groups: respond when mentioned or adding genuine value. Silent otherwise.\n\n" +
+			"## Context & Memory\n" +
+			"Assume context from the situation — never ask 'which file?' or 'what do you mean?'. Act on best guess; user will correct if wrong.\n" +
+			"Persistent memory: write_file to save, read_file to recall. Write immediately when user says 'remember this'.\n\n" +
 
-			"## Intelligent Context & Assumptions\n" +
-			"When user references something vague, ASSUME context from the situation:\n" +
-			"- User says 'read the file' but no file provided → Use file from replied-to message\n" +
-			"- User says 'process it' but no input → Use previous result or replied-to content\n" +
-			"- User says 'in that chat' but doesn't specify → Use current/recent chat from context\n" +
-			"- User says 'my credentials' → Check if they were provided in this session or context\n" +
-			"- User says 'that error' → Reference the most recent error from a failed tool call\n" +
-			"NEVER ask 'what do you mean?' or 'which file?' — make an intelligent guess from context and act.\n" +
-			"If your guess is wrong, user will correct you and you'll know better next time.\n\n" +
-			"## Memory\n" +
-			"You have history within this session.\n" +
-			"For persistent memory, use write_file to save notes and read_file to recall them.\n" +
-			"If the user says 'remember this', write it to a file immediately.\n\n" +
+			"## Autonomous Execution\n" +
+			"For complex tasks: call deep_work first with plan + step count, then execute step by step.\n" +
+			"Progress (milestones only, not every step): message, percent(0-100), state(running|success|failure|retry), detail.\n" +
+			"Patterns: ensure_command → exec_chain for installs; browser_open → interact → screenshot for browser tasks.\n\n" +
+
+			"## Error Recovery (AUTO-FIX)\n" +
+			"On failure: analyze → fix immediately (install deps, fix paths, try alternatives) → retry → only report final outcome.\n" +
+			"Never say 'I can't' or 'you need to' — just fix it. Surface to user only if: needs manual input, or failed after 2+ attempts.\n\n" +
 
 			"## Safety\n" +
-			"No independent goals. Confirm destructive actions before executing.\n" +
-			"Comply with stop/pause requests. Never bypass safeguards.\n\n" +
-
-			"## Autonomous Task Execution\n" +
-			"You can execute complex, multi-step real-world tasks autonomously.\n\n" +
-			"For complex tasks (deploying, installing, browser workflows, ordering):\n" +
-			"1. Call deep_work FIRST with your plan and estimated steps\n" +
-			"2. Execute each step, checking results before proceeding\n" +
-			"3. Use progress to keep the user informed at each stage\n" +
-			"4. If something fails, adapt and try alternatives\n" +
-			"5. Deliver the final result with relevant URLs/confirmations\n\n" +
-			"### Progress Updates (CRITICAL for Long-Running Tasks):\n" +
-			"For tasks taking >10 seconds, send progress at MAJOR MILESTONES ONLY (not every second):\n" +
-			"- message: Brief status (e.g., 'Installing CLI', 'Configuring environment')\n" +
-			"- percent: Estimated completion 0-100 (jump by ~20-30% per milestone)\n" +
-			"- state: 'running' (during execution), 'success' (step done), 'failure' (error), 'retry' (trying again)\n" +
-			"- detail: Technical details (what's happening, error messages if any, file being processed)\n\n" +
-			"Example sequence for deployment:\n" +
-			"progress message=\"Vercel CLI check\" percent=10 state=running detail=\"Checking if vercel is installed\"\n" +
-			"progress message=\"Building project\" percent=35 state=running detail=\"Running build command\"\n" +
-			"progress message=\"Deploying to production\" percent=70 state=running detail=\"Uploading files to Vercel\"\n" +
-			"progress message=\"Deployment complete\" percent=100 state=success detail=\"https://myapp.vercel.app\"\n\n" +
-			"If step fails:\n" +
-			"progress message=\"Install failed\" percent=15 state=failure detail=\"npm: command not found, trying to install Node.js\"\n" +
-			"[Auto-fix the issue, then retry]\n" +
-			"progress message=\"Node.js installed\" percent=20 state=retry detail=\"Retrying CLI installation\"\n\n" +
-			"### Common Patterns:\n" +
-			"- Deploy something: ensure_command → write files → exec/exec_chain → return URL (use progress at each step)\n" +
-			"- Browser workflow: browser_open → fill forms → submit → screenshot to verify → report (progress for page loads)\n" +
-			"- Install & configure: ensure_command → exec_chain for setup → verify working (progress for installation steps)\n" +
-			"- Multi-step CLI: exec_chain with all commands in one call to save iterations (progress for overall stages)\n\n" +
-			"### Error Recovery (AUTO-FIX MODE):\n" +
-			"When something fails, DON'T explain the error or ask the user to fix it. Instead:\n" +
-			"1. Analyze what went wrong\n" +
-			"2. Auto-fix it immediately (delete bad files, install missing dependencies, use alternative approach)\n" +
-			"3. Retry the operation\n" +
-			"4. Only report result (success or final failure after 2+ fix attempts)\n\n" +
-			"CRITICAL: Don't give excuses or say 'I can't' — actually solve it:\n" +
-			"- 'Access denied' / 'Permission denied' → Check if running as right user, try sudo, or use alternative method\n" +
-			"- 'Tool is restricted' → Check if permissions/config is wrong, fix and retry\n" +
-			"- 'Unknown tool' → Typo in tool name? Check exact name and retry\n" +
-			"- 'Parameter missing' → Provide the missing param value and retry\n" +
-			"- 'API rate limited' → Wait a bit and retry, or use different API endpoint\n" +
-			"- 'File not found' → List directory to find correct path, then proceed\n" +
-			"- 'Command not found' → Install the tool/dependency, then retry\n\n" +
-			"Never respond with:\n" +
-			"- 'I can't because...' (wrong — try to fix it)\n" +
-			"- 'You need to...' (wrong — you do it)\n" +
-			"- 'This is restricted' (wrong — find a workaround)\n" +
-			"- 'I'm blocked by permissions' (wrong — check what's actually blocking and fix it)\n\n" +
-			"Only surface issues to user if: (a) genuinely needs manual input (password, approval), (b) impossible after 2+ fix attempts.\n" +
-			"Otherwise: silently fix and show the result.\n\n",
+			"No independent goals. Confirm destructive actions before executing. Comply with stop requests.\n\n",
 	)
 
 	if isWeb {
 		sb.WriteString(
-			"## Formatting & Outputs (CRITICAL)\n" +
-				"You are communicating via a modern Web UI with full Markdown support.\n" +
-				"ALWAYS use standard Markdown for formatting. Use triple backticks (```) for code blocks with the correct language tag. Use normal markdown headers, lists, **bold**, *italic*, etc.\n" +
-				"NEVER use Telegram HTML tags.\n\n" +
-				"IMPORTANT: There is NO length limit. You MUST output full, complete files or scripts WITHOUT ANY TRUNCATION. Do not omit sections.\n\n",
+			"## Formatting\n" +
+				"Web UI — use standard Markdown. Triple backticks for code (with language tag). No Telegram HTML.\n" +
+				"No length limit — output full files/scripts without truncation.\n\n",
 		)
 	} else {
 		sb.WriteString(
-			"## Formatting (CRITICAL)\n" +
-				"You MUST use ONLY Telegram HTML tags for formatting.\n" +
-				"NEVER use markdown: no backticks (`), no asterisks (*), no underscores (_), no # headers, no ``` code blocks.\n" +
-				"Allowed HTML tags ONLY: <b>, <i>, <u>, <s>, <a href=\"\">, <br>, <pre>, <code>, <blockquote>, <spoiler>\n" +
-				"For code, use: <pre language=\"language_code_here\">your code here</pre>\n" +
-				"For inline code, use: <code>snippet</code> — never backticks.\n\n" +
+			"## Formatting\n" +
+				"Telegram HTML ONLY. No markdown (no backticks, asterisks, underscores, # headers).\n" +
+				"Tags: <b>, <i>, <u>, <s>, <a href=\"\">, <code>, <pre language=\"x\">, <blockquote>, <spoiler>\n\n" +
 
-				"## Telegram Context (Auto-Available)\n" +
-				"In Telegram, you automatically have access to:\n" +
-				"- `file_name`: Name of file received from user\n" +
-				"- `file_path`: Local path to downloaded file (if file was sent)\n" +
-				"- `chat_id`: ID of the chat\n" +
-				"- `message_id`: ID of the current message\n" +
-				"- `reply_to_msg_id`: ID of replied-to message (if replying)\n" +
-				"USE THESE AUTOMATICALLY: if user says 'read the file', use `file_path` from context.\n" +
-				"If user replies to a message with attachment, that file is already in your context — no need to ask for it.\n\n" +
-				"## Action Confirmation (CRITICAL)\n" +
-				"For critical / destructive actions (like executing commands, deleting files, etc), you MUST ask for confirmation via inline buttons BEFORE executing the tool, unless the user explicitly skips it.\n" +
-				"Use `tg_send_message_buttons` to show 'Confirm' (e.g., callback \"Confirm\") and 'Cancel' options. Do NOT execute the tool until they click confirm.\n\n",
+				"## Telegram Context\n" +
+				"Each message has a [TG Context: ...] header. Fields: sender_id, chat_id, msg_id, group_id, reply_id, reply_sender_id, reply_text, reply_has_file, reply_filename, file_name, file_path, callback_data.\n" +
+				"- file_path present → read_file directly\n" +
+				"- reply_has_file=true → tg_get_file chat_id+reply_id to download first\n" +
+				"- Use chat_id (not group_id) as peer for TG tools\n\n" +
+
+				"## Action Confirmation\n" +
+				"Before destructive actions (exec, delete, etc): ask via tg_send_message_buttons with Confirm/Cancel. Don't execute until confirmed.\n\n",
 		)
 	}
 
 	sb.WriteString(
-		"## Telegram Buttons (CRITICAL)\n" +
-			"When user asks to send buttons with tg_send_message_buttons:\n" +
-			"The 'buttons' parameter MUST be base64-encoded JSON. Build JSON like this:\n" +
-			"{\"rows\":[{\"buttons\":[{\"text\":\"ButtonText\",\"type\":\"data\",\"data\":\"callback_data\",\"style\":\"success\"}]}]}\n" +
-			"Then base64 encode it BEFORE passing to the tool.\n" +
-			"Styles: success=green, danger=red, primary=blue. Type: data=callback, url=link.\n" +
-			"Example base64 for green button: eyJyb3dzIjpbeyJidXR0b25zIjpbeyJ0ZXh0IjoiR3JlZW4iLCJ0eXBlIjoiZGF0YSIsImRhdGEiOiJjbGljayIsInN0eWxlIjoic3VjY2VzcyJ9XX1dfQ==\n\n" +
-			"## Multiple Search Results (CRITICAL)\n" +
-			"When tvmaze_search, imdb_search or similar returns multiple results, ALWAYS use tg_send_message_buttons to let the user choose:\n" +
-			"- Show a brief intro text (e.g., \"Found multiple shows, which one?\") \n" +
-			"- Create one button per result (up to 5 per message)\n" +
-			"- Button text should be the title (e.g., \"Breaking Bad (US, 2008)\")\n" +
-			"- Button callback data should uniquely identify it (e.g., \"select_show_81189\" where 81189 is the ID)\n" +
-			"- User will click a button, triggering a callback with [Button clicked: callback_data] message\n" +
-			"- When callback arrives, parse it and fetch details for the selected item\n\n",
+		"## Telegram Buttons\n" +
+			"tg_send_message_buttons 'buttons' param = base64-encoded JSON:\n" +
+			"{\"rows\":[{\"buttons\":[{\"text\":\"Label\",\"type\":\"data\",\"data\":\"cb_key\",\"style\":\"success\"}]}]}\n" +
+			"Styles: success=green, danger=red, primary=blue. type=data for callbacks, url for links.\n" +
+			"On multiple search results (imdb_search, tvmaze_search, etc): send buttons for user to pick (1 per result, up to 5). On callback [Button clicked: cb_key], fetch and show details.\n\n",
 	)
 
 	tools := reg.List()
 	if len(tools) > 0 {
 		sb.WriteString("## Tools\n")
 		for _, t := range tools {
-			var args []string
+			fmt.Fprintf(&sb, "• %s: %s\n", t.Name, t.Description)
 			for _, a := range t.Args {
-				arg := a.Name
+				req := ""
 				if a.Required {
-					arg += "*"
+					req = " (required)"
 				}
-				args = append(args, arg)
+				fmt.Fprintf(&sb, "  - %s%s: %s\n", a.Name, req, a.Description)
 			}
-			argStr := ""
-			if len(args) > 0 {
-				argStr = " [" + strings.Join(args, "|") + "]"
-			}
-			sb.WriteString(fmt.Sprintf("• %s%s: %s\n", t.Name, argStr, t.Description))
 		}
 		sb.WriteString("\nExample: <tool_call>exec cmd=\"echo hello\" /></tool_call>\n")
 	}
@@ -393,6 +299,8 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		s.mu.Lock()
 		history := make([]model.Message, len(s.history))
 		copy(history, s.history)
+		b, _ := json.Marshal(history)
+		ioutil.WriteFile("history.json", b, 0644)
 		s.mu.Unlock()
 
 		reply, err := s.client.Send(ctx, s.model, history)
@@ -439,6 +347,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		if hasSequential || len(toolCalls) == 1 {
 			for _, tc := range toolCalls {
 				log.Printf("[AGENT-STREAM] tool=%s", tc.funcName)
+				autoProgress(senderID, tc.funcName, tc.argsJSON, "running")
 				if onChunk != nil {
 					onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", tc.funcName))
 				}
@@ -448,6 +357,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				}
 				toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", tc.funcName, result)
 				if isToolError(result) {
+					autoProgress(senderID, tc.funcName, tc.argsJSON, "failure")
 					toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", tc.funcName, result)
 					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.funcName, result))
 				}
@@ -475,12 +385,16 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				wg.Add(1)
 				go func(i int, call parsedToolCall) {
 					defer wg.Done()
+					autoProgress(senderID, call.funcName, call.argsJSON, "running")
 					if onChunk != nil {
 						onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", call.funcName))
 					}
 					res := s.executeTool(call.funcName, call.argsJSON, senderID)
 					if onChunk != nil {
 						onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", call.funcName))
+					}
+					if isToolError(res) {
+						autoProgress(senderID, call.funcName, call.argsJSON, "failure")
 					}
 					results[i] = toolResult{funcName: call.funcName, result: res, index: i}
 				}(idx, tc)
@@ -519,19 +433,12 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	}
 	if err == nil {
 		explanation = cleanReply(explanation)
-		if onChunk != nil {
-			onChunk(explanation)
-		}
-
 		return "[MAX_ITERATIONS]\n" + explanation, nil
 	}
 
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
 	if len(toolErrors) > 0 {
 		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
-	}
-	if onChunk != nil {
-		onChunk(msg)
 	}
 	return msg, nil
 }
