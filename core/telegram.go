@@ -32,6 +32,9 @@ type TelegramBot struct {
 var (
 	ctxMu  sync.Mutex
 	msgCtx = make(map[string]map[string]any)
+
+	inlineQueryMu sync.Mutex
+	inlineQueries = make(map[string]string) // shortID -> full query text
 )
 
 func setTelegramContext(userID string, ctx map[string]any) {
@@ -189,6 +192,81 @@ func (b *TelegramBot) Start() error {
 		return b.handleFile(m)
 	}, telegram.IsMedia)
 
+	b.client.OnInlineQuery(string(telegram.OnInline), func(iq *telegram.InlineQuery) error {
+		userID := strconv.FormatInt(iq.SenderID, 10)
+		if !IsSudo(userID) {
+			return nil
+		}
+		query := strings.TrimSpace(iq.Query)
+		if query == "" {
+			return nil
+		}
+		shortID := fmt.Sprintf("%d_%d", iq.SenderID, iq.QueryID)
+		inlineQueryMu.Lock()
+		inlineQueries[shortID] = query
+		inlineQueryMu.Unlock()
+
+		builder := iq.Builder()
+		builder.Article(
+			"Ask ApexClaw",
+			query,
+			"[processing]",
+			&telegram.ArticleOptions{ID: shortID, ReplyMarkup: telegram.InlineData("[PROCESSING]", "[PROCESSING]")},
+		)
+		_, err := iq.Answer(builder.Results(), &telegram.InlineSendOptions{CacheTime: 0})
+		return err
+	})
+
+	b.client.OnChosenInline(func(is *telegram.InlineSend) error {
+		userID := strconv.FormatInt(is.SenderID, 10)
+		if !IsSudo(userID) {
+			return nil
+		}
+		shortID := is.ID
+		inlineQueryMu.Lock()
+		query := inlineQueries[shortID]
+		delete(inlineQueries, shortID)
+		inlineQueryMu.Unlock()
+		if query == "" {
+			return nil
+		}
+		log.Printf("[TG] inline send from %s: %q", userID, truncate(query, 80))
+
+		ctx := map[string]any{
+			"sender_id":       userID,
+			"telegram_id":     is.ChatID(),
+			"msg_id":          int64(is.MessageID()),
+			"is_private_chat": true,
+			"chat_type":       "private",
+			"inline_query":    query,
+		}
+		setTelegramContext(userID, ctx)
+		ctxPrefix := formatTGContext(ctx)
+		fullMsg := query
+		if ctxPrefix != "" {
+			fullMsg = ctxPrefix + "\n" + query
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		defer cancel()
+
+		session := GetOrCreateAgentSession(userID)
+
+		result, err := session.RunStream(timeoutCtx, userID, fullMsg, func(string) {})
+		if err != nil {
+			log.Printf("[TG] inline agent error for %s: %v", userID, err)
+			is.Edit("⚠️ Something went wrong processing your query.")
+			return nil
+		}
+
+		result = cleanResultForTelegram(result)
+		if result == "" {
+			result = "Done."
+		}
+		_, err = is.Edit(result, &telegram.SendOptions{ParseMode: telegram.HTML})
+		return nil
+	})
+
 	b.client.On(telegram.OnCallback, func(c *telegram.CallbackQuery) error {
 		if c.Sender == nil {
 			return nil
@@ -196,6 +274,11 @@ func (b *TelegramBot) Start() error {
 		userID := strconv.FormatInt(c.SenderID, 10)
 		if !IsSudo(userID) {
 			c.Answer("Access denied", &telegram.CallbackOptions{Alert: true})
+			return nil
+		}
+
+		if strings.EqualFold(c.DataString(), "[PROCESSING]") {
+			c.Answer("Please wait for the previous request to complete.", &telegram.CallbackOptions{Alert: true})
 			return nil
 		}
 
