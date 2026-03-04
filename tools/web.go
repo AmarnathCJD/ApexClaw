@@ -95,10 +95,10 @@ var WebSearch = &ToolDef{
 		sb.WriteString(fmt.Sprintf("Search: %s\n\n", query))
 
 		if result.Answer != "" {
-			sb.WriteString(fmt.Sprintf("Answer: %s\n\n", result.Answer))
+			fmt.Fprintf(&sb, "Answer: %s\n\n", result.Answer)
 		}
 		if result.AbstractText != "" {
-			sb.WriteString(fmt.Sprintf("Summary: %s\nSource: %s\n\n", result.AbstractText, result.AbstractURL))
+			fmt.Fprintf(&sb, "Summary: %s\nSource: %s\n\n", result.AbstractText, result.AbstractURL)
 		}
 		if len(result.RelatedTopics) > 0 {
 			sb.WriteString("Related:\n")

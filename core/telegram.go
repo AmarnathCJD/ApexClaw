@@ -448,7 +448,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 }
 
 func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
-	userID := strconv.FormatInt(m.Sender.ID, 10)
+	userID := strconv.FormatInt(m.SenderID(), 10)
 	if !IsSudo(userID) {
 		return nil
 	}
@@ -463,13 +463,10 @@ func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 	}
 
 	fileName := m.File.Name
-	log.Printf("[TG] file from %s (chat %d, name: %s)", userID, m.ChatID(), fileName)
 	b.sendTyping(m)
 
 	filePath, err := m.Download()
 	if err != nil {
-		log.Printf("[TG] file download error: %v", err)
-		_, _ = m.Reply("Error: Failed to download your file.")
 		return nil
 	}
 	defer os.Remove(filePath)
@@ -538,7 +535,6 @@ func cleanResultForTelegram(result string) string {
 }
 
 func stripMarkdown(s string) string {
-	// Remove markdown syntax, keep content
 	s = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(s, "<b>$1</b>")                             // **bold** → bold
 	s = regexp.MustCompile(`\*(.+?)\*`).ReplaceAllString(s, "<i>$1</i>")                                 // *italic* → italic
 	s = regexp.MustCompile(`__(.+?)__`).ReplaceAllString(s, "<b>$1</b>")                                 // __bold__ → bold
@@ -585,13 +581,10 @@ func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string
 	}
 }
 
-// newStreamHandler returns (onChunk, flush, done).
-// Shows a live numbered step log ("1. fetch github.com — done", "2. write igdl2.py — failed: ...").
-// Single progress message, edited in place, deleted when done. Final reply sent as one clean message.
 func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderID string) (func(string), func(), func()) {
 	type stepEntry struct {
 		label  string
-		status string // "running", "done", "failed: ..."
+		status string
 	}
 
 	var (
