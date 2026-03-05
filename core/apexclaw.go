@@ -135,7 +135,9 @@ func buildSystemPrompt(reg *ToolRegistry, isWeb bool) string {
 		sb.WriteString(
 			"## Formatting (Telegram)\n" +
 				"HTML ONLY. No markdown syntax (no *, **, _, #, `, >, [, ]).\n" +
+				"CRITICAL: DO NOT use markdown tables. Telegram does not support them. Use structured plain text or lists instead.\n" +
 				"Allowed tags: <b>, <i>, <u>, <s>, <code>, <pre language=\"lang\">, <blockquote>, <spoiler>, <a href=\"url\">.\n" +
+				"Always wrap code blocks or console outputs in <pre> tags. Never use backticks.\n" +
 				"Be concise. One focused message per response. Max 3500 chars; split only if necessary.\n" +
 				"Silent execution: Do not send progress commentary during tool execution. Wait until the task is done, then send one clean result.\n\n" +
 

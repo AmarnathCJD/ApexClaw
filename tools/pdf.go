@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RequiredTools maps tool names to their package names for installation
@@ -402,17 +404,19 @@ var LaTeXCreate = &ToolDef{
 			return fmt.Sprintf("Error writing LaTeX source: %v", err)
 		}
 
-		// Compile LaTeX to PDF
-		cmd := exec.Command(compiler, "-interaction=nonstopmode", "-output-directory="+tmpDir, tmpTex)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, compiler, "-interaction=nonstopmode", "-output-directory="+tmpDir, tmpTex)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			// Log compilation errors
 			errMsg := string(output)
+			if ctx.Err() == context.DeadlineExceeded {
+				return "Error: LaTeX compilation timed out after 120 seconds."
+			}
 			if strings.Contains(errMsg, "Error") || strings.Contains(errMsg, "error") {
 				return fmt.Sprintf("LaTeX compilation error:\n%s", errMsg)
 			}
 		}
 
-		// Copy generated PDF to output location
 		tmpPdf := filepath.Join(tmpDir, "document.pdf")
 		if _, err := os.Stat(tmpPdf); err != nil {
 			return fmt.Sprintf("Error: PDF not generated. Check LaTeX syntax.\n\nCompiler: %s\nOutput file: %s", compiler, tmpPdf)
@@ -560,10 +564,15 @@ var LaTeXCompile = &ToolDef{
 		}
 
 		// Compile
-		cmd := exec.Command(compiler, "-interaction=nonstopmode", "-output-directory="+tmpDir, tmpInput)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, compiler, "-interaction=nonstopmode", "-output-directory="+tmpDir, tmpInput)
 		cmd.Dir = inputDir
 		if output, err := cmd.CombinedOutput(); err != nil {
 			errMsg := string(output)
+			if ctx.Err() == context.DeadlineExceeded {
+				return "Error: LaTeX compilation timed out after 120 seconds."
+			}
 			if strings.Contains(errMsg, "Error") || strings.Contains(errMsg, "error") {
 				return fmt.Sprintf("LaTeX compilation error:\n%s", errMsg)
 			}

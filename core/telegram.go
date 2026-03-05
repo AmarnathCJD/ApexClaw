@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"maps"
@@ -534,16 +535,38 @@ func cleanResultForTelegram(result string) string {
 	return strings.TrimSpace(result)
 }
 
+var allowedTagsRe = regexp.MustCompile(`(?i)(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|spoiler)>|<a href="[^"]*">|<code class="[^"]*">|<pre language="[^"]*">|<span class="tg-spoiler">|</span>)`)
+
 func stripMarkdown(s string) string {
-	s = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(s, "<b>$1</b>")                             // **bold** → bold
-	s = regexp.MustCompile(`\*(.+?)\*`).ReplaceAllString(s, "<i>$1</i>")                                 // *italic* → italic
-	s = regexp.MustCompile(`__(.+?)__`).ReplaceAllString(s, "<b>$1</b>")                                 // __bold__ → bold
-	s = regexp.MustCompile("```[a-z]*\n(.+?)\n```").ReplaceAllString(s, "<pre language=\"$1\">$2</pre>") // ```code``` → code
-	s = regexp.MustCompile("`([^`]+)`").ReplaceAllString(s, "<code>$1</code>")                           // `code` → code
-	s = regexp.MustCompile(`^#+\s+`).ReplaceAllString(s, "")                                             // # heading → heading
-	s = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`).ReplaceAllString(s, "<a href=\"$2\">$1</a>")       // [text](url) → text
-	s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")                                            // Multiple newlines → single
-	return s
+	s = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`).ReplaceAllStringFunc(s, func(table string) string {
+		return "<pre>\n" + strings.TrimSpace(table) + "\n</pre>\n"
+	})
+
+	s = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`).ReplaceAllString(s, "<b>$1</b>")
+	s = regexp.MustCompile(`(?s)__(.*?)__`).ReplaceAllString(s, "<b>$1</b>")
+	s = regexp.MustCompile(`(?s)\*(.*?)\*`).ReplaceAllString(s, "<i>$1</i>")
+	s = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n?(.*?)```").ReplaceAllString(s, "<pre>$1</pre>")
+	s = regexp.MustCompile("(?s)`([^`]+)`").ReplaceAllString(s, "<code>$1</code>")
+	s = regexp.MustCompile(`(?m)^#+\s+(.*)$`).ReplaceAllString(s, "<b>$1</b>")
+	s = regexp.MustCompile(`(?:\[([^\]]+)\])\(([^)]+)\)`).ReplaceAllString(s, "<a href=\"$2\">$1</a>")
+	s = strings.ReplaceAll(s, "`", "")
+
+	var mapping []string
+	protected := allowedTagsRe.ReplaceAllStringFunc(s, func(tag string) string {
+		mapping = append(mapping, tag)
+		return fmt.Sprintf("____TG_TAG_%d____", len(mapping)-1)
+	})
+
+	escaped := html.EscapeString(protected)
+
+	for i, tag := range mapping {
+		placeholder := fmt.Sprintf("____TG_TAG_%d____", i)
+		escaped = strings.Replace(escaped, placeholder, tag, 1)
+	}
+
+	escaped = regexp.MustCompile(`\n{3,}`).ReplaceAllString(escaped, "\n\n")
+
+	return strings.TrimSpace(escaped)
 }
 
 func (b *TelegramBot) safeSend(m *telegram.NewMessage, text string) {
