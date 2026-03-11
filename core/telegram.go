@@ -608,6 +608,30 @@ func (b *TelegramBot) safeSendText(chatID int64, replyToMsgID int64, text string
 	}
 }
 
+// isTGSendTool returns true for tool names that directly deliver a message to
+// the Telegram chat. When one of these succeeds, the agent's final text
+// response is suppressed to prevent a redundant second message.
+var tgSendTools = map[string]bool{
+	"tg_send_message":         true,
+	"tg_send_file":            true,
+	"tg_send_photo":           true,
+	"tg_send_photo_url":       true,
+	"tg_send_album":           true,
+	"tg_broadcast":            true,
+	"tg_send_message_buttons": true,
+	"tg_send_location":        true,
+}
+
+func isTGSendTool(label string) bool {
+	// label may be "tool_name" or "tool_name(args...)" — check prefix
+	for name := range tgSendTools {
+		if label == name || strings.HasPrefix(label, name+"(") {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderID string) (func(string), func(), func()) {
 	type stepEntry struct {
 		label  string
@@ -620,6 +644,7 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		lastEditAt    time.Time
 		finalBuf      strings.Builder
 		mu            sync.Mutex
+		sentDirect    bool // true if a tg_send_* tool successfully ran
 	)
 
 	sendProgressMsg := func(text string) int32 {
@@ -712,6 +737,11 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 
 			hasErr := false
 			mu.Lock()
+			// If a tg_send_* tool succeeded, mark sentDirect so done() won't
+			// also send a redundant text confirmation message.
+			if statusRaw == "ok" && isTGSendTool(label) {
+				sentDirect = true
+			}
 			for i := len(steps) - 1; i >= 0; i-- {
 				if steps[i].label == label && steps[i].status == "running" {
 					if statusRaw == "ok" {
@@ -761,13 +791,14 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		mu.Lock()
 		msgID := progressMsgID
 		result := strings.TrimSpace(finalBuf.String())
+		alreadySent := sentDirect
 		mu.Unlock()
 
 		if msgID != 0 {
 			b.client.DeleteMessages(chatID, []int32{msgID})
 		}
 
-		if result == "" {
+		if alreadySent || result == "" {
 			return
 		}
 
