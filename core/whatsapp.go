@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +24,10 @@ import (
 type WhatsAppBot struct {
 	client *whatsmeow.Client
 }
+
+var waBot *WhatsAppBot
+
+func GetWhatsAppBot() *WhatsAppBot { return waBot }
 
 func NewWhatsAppBot() (*WhatsAppBot, error) {
 	ctx := context.Background()
@@ -71,10 +77,38 @@ func (b *WhatsAppBot) Start() error {
 	return nil
 }
 
+func (b *WhatsAppBot) isGroup(chatJID types.JID) bool {
+	return chatJID.Server == types.GroupServer
+}
+
+// isBotReplied returns true if the message is a reply to a message sent by this bot.
+func (b *WhatsAppBot) isBotReplied(v *events.Message) bool {
+	ext := v.Message.GetExtendedTextMessage()
+	if ext == nil {
+		return false
+	}
+	ctx := ext.GetContextInfo()
+	if ctx == nil {
+		return false
+	}
+	myJID := b.client.Store.ID
+	if myJID == nil {
+		return false
+	}
+	participant := ctx.GetParticipant()
+	return strings.HasPrefix(participant, myJID.User+"@") || participant == myJID.User
+}
+
 func (b *WhatsAppBot) eventHandler(evt interface{}) {
 	switch v := evt.(type) {
 	case *events.Message:
 		if v.Info.IsFromMe {
+			return
+		}
+		isGroup := b.isGroup(v.Info.Chat)
+		ownerID := os.Getenv("WA_OWNER_ID")
+		userID := v.Info.Sender.User
+		if ownerID != "" && userID != ownerID {
 			return
 		}
 
@@ -83,26 +117,180 @@ func (b *WhatsAppBot) eventHandler(evt interface{}) {
 			text = v.Message.GetExtendedTextMessage().GetText()
 		}
 
-		if text == "" {
+		if text != "" {
+			// In groups, only respond when the bot's own message was replied to
+			if isGroup && !b.isBotReplied(v) {
+				return
+			}
+			log.Printf("[WA] msg from %s (group=%v): %q", userID, isGroup, truncate(text, 80))
+			b.handleText(v.Info.Chat, userID, text, isGroup)
 			return
 		}
 
-		userID := v.Info.Sender.User
-		WA_OWNER_ID := os.Getenv("WA_OWNER_ID")
-		if userID != WA_OWNER_ID {
-			return
+		// Handle incoming media
+		if v.Message.GetImageMessage() != nil || v.Message.GetDocumentMessage() != nil ||
+			v.Message.GetAudioMessage() != nil || v.Message.GetVideoMessage() != nil {
+			if isGroup && !b.isBotReplied(v) {
+				return
+			}
+			b.handleIncomingMedia(v)
 		}
-
-		log.Printf("[WA] msg from %s: %q", userID, truncate(text, 80))
-		b.handleText(v.Info.Chat, userID, text)
 	}
 }
 
-func (b *WhatsAppBot) handleText(chatID types.JID, userID string, text string) {
+func (b *WhatsAppBot) handleIncomingMedia(v *events.Message) {
+	userID := v.Info.Sender.User
+	chatID := v.Info.Chat
+
+	var data []byte
+	var caption, mimeType, fileName string
+	var err error
+
+	dlCtx := context.Background()
+	switch {
+	case v.Message.GetImageMessage() != nil:
+		img := v.Message.GetImageMessage()
+		data, err = b.client.Download(dlCtx, img)
+		caption, mimeType, fileName = img.GetCaption(), img.GetMimetype(), "image.jpg"
+	case v.Message.GetDocumentMessage() != nil:
+		doc := v.Message.GetDocumentMessage()
+		data, err = b.client.Download(dlCtx, doc)
+		caption, mimeType, fileName = doc.GetCaption(), doc.GetMimetype(), doc.GetFileName()
+		if fileName == "" {
+			fileName = "document"
+		}
+	case v.Message.GetAudioMessage() != nil:
+		audio := v.Message.GetAudioMessage()
+		data, err = b.client.Download(dlCtx, audio)
+		mimeType, fileName = audio.GetMimetype(), "audio.ogg"
+	case v.Message.GetVideoMessage() != nil:
+		vid := v.Message.GetVideoMessage()
+		data, err = b.client.Download(dlCtx, vid)
+		caption, mimeType, fileName = vid.GetCaption(), vid.GetMimetype(), "video.mp4"
+	}
+
+	if err != nil {
+		log.Printf("[WA] media download error: %v", err)
+		return
+	}
+
+	ext := filepath.Ext(fileName)
+	if ext == "" && mimeType != "" {
+		if exts, _ := mime.ExtensionsByType(mimeType); len(exts) > 0 {
+			ext = exts[0]
+		}
+	}
+	tmp, err := os.CreateTemp("", "wa_media_*"+ext)
+	if err != nil {
+		return
+	}
+	tmp.Write(data)
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	if caption == "" {
+		caption = fmt.Sprintf("Process this file: %s", fileName)
+	}
+	msgCtxData := map[string]any{
+		"sender_id": userID, "platform": "whatsapp",
+		"chat_id": chatID.String(), "file_name": fileName, "file_path": tmp.Name(),
+	}
+	setTelegramContext(userID, msgCtxData)
+	ctxPrefix := formatTGContext(msgCtxData)
+	if ctxPrefix != "" {
+		caption = ctxPrefix + "\n" + caption
+	}
+
+	b.client.SendChatPresence(context.Background(), chatID, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	session := GetOrCreateAgentSession("wa_" + userID)
+	onChunk, _, done := b.newStreamHandler(chatID, "wa_"+userID)
+	result, err := session.RunStream(timeoutCtx, "wa_"+userID, caption, onChunk)
+	b.client.SendChatPresence(context.Background(), chatID, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	done()
+	if err != nil {
+		log.Printf("[WA] media agent error: %v", err)
+		b.safeSendText(chatID, "Something went wrong processing the file.")
+		return
+	}
+	result = cleanResultForWhatsApp(result)
+	if result != "" && !strings.Contains(result, "[MAX_ITERATIONS]") {
+		b.safeSendText(chatID, result)
+	}
+}
+
+// SendMedia uploads and sends a file (image/video/audio/document) to a WhatsApp chat.
+func (b *WhatsAppBot) SendMedia(chatID types.JID, filePath, caption, mediaType string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	ctx := context.Background()
+	switch mediaType {
+	case "image":
+		resp, err := b.client.Upload(ctx, data, whatsmeow.MediaImage)
+		if err != nil {
+			return err
+		}
+		_, err = b.client.SendMessage(ctx, chatID, &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+			Caption: proto.String(caption), Mimetype: proto.String(mimeType),
+			URL: proto.String(resp.URL), DirectPath: proto.String(resp.DirectPath),
+			MediaKey: resp.MediaKey, FileEncSHA256: resp.FileEncSHA256,
+			FileSHA256: resp.FileSHA256, FileLength: proto.Uint64(resp.FileLength),
+		}})
+		return err
+	case "video":
+		resp, err := b.client.Upload(ctx, data, whatsmeow.MediaVideo)
+		if err != nil {
+			return err
+		}
+		_, err = b.client.SendMessage(ctx, chatID, &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+			Caption: proto.String(caption), Mimetype: proto.String(mimeType),
+			URL: proto.String(resp.URL), DirectPath: proto.String(resp.DirectPath),
+			MediaKey: resp.MediaKey, FileEncSHA256: resp.FileEncSHA256,
+			FileSHA256: resp.FileSHA256, FileLength: proto.Uint64(resp.FileLength),
+		}})
+		return err
+	case "audio":
+		resp, err := b.client.Upload(ctx, data, whatsmeow.MediaAudio)
+		if err != nil {
+			return err
+		}
+		_, err = b.client.SendMessage(ctx, chatID, &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+			Mimetype: proto.String(mimeType), URL: proto.String(resp.URL),
+			DirectPath: proto.String(resp.DirectPath), MediaKey: resp.MediaKey,
+			FileEncSHA256: resp.FileEncSHA256, FileSHA256: resp.FileSHA256,
+			FileLength: proto.Uint64(resp.FileLength),
+		}})
+		return err
+	default: // document
+		resp, err := b.client.Upload(ctx, data, whatsmeow.MediaDocument)
+		if err != nil {
+			return err
+		}
+		_, err = b.client.SendMessage(ctx, chatID, &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
+			Caption: proto.String(caption), FileName: proto.String(filepath.Base(filePath)),
+			Mimetype: proto.String(mimeType), URL: proto.String(resp.URL),
+			DirectPath: proto.String(resp.DirectPath), MediaKey: resp.MediaKey,
+			FileEncSHA256: resp.FileEncSHA256, FileSHA256: resp.FileSHA256,
+			FileLength: proto.Uint64(resp.FileLength),
+		}})
+		return err
+	}
+}
+
+func (b *WhatsAppBot) handleText(chatID types.JID, userID string, text string, isGroup bool) {
 	msgCtxData := map[string]any{
 		"sender_id": userID,
 		"platform":  "whatsapp",
 		"chat_id":   chatID.String(),
+		"is_group":  isGroup,
 	}
 	setTelegramContext(userID, msgCtxData)
 	ctxPrefix := formatTGContext(msgCtxData)
@@ -125,7 +313,7 @@ func (b *WhatsAppBot) handleText(chatID types.JID, userID string, text string) {
 	if err != nil {
 		done()
 		log.Printf("[WA] agent error for %s: %v", userID, err)
-		b.safeSendText(chatID, "⚠️ Something went wrong. Please try again.")
+		b.safeSendText(chatID, "Something went wrong. Please try again.")
 		return
 	}
 

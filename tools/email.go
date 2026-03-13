@@ -549,11 +549,11 @@ var GmailGetMessage = &ToolDef{
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("📨 Message Details\n\n"))
-		sb.WriteString(fmt.Sprintf("Subject: %s\n", subject))
-		sb.WriteString(fmt.Sprintf("From: %s\n", from))
-		sb.WriteString(fmt.Sprintf("Date: %s\n\n", date))
-		sb.WriteString(fmt.Sprintf("Body:\n%s\n", msgText))
+		sb.WriteString("📨 Message Details\n\n")
+		fmt.Fprintf(&sb, "Subject: %s\n", subject)
+		fmt.Fprintf(&sb, "From: %s\n", from)
+		fmt.Fprintf(&sb, "Date: %s\n\n", date)
+		fmt.Fprintf(&sb, "Body:\n%s\n", msgText)
 		return strings.TrimRight(sb.String(), "\n")
 	},
 }

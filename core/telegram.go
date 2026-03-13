@@ -647,18 +647,6 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		sentDirect    bool // true if a tg_send_* tool successfully ran
 	)
 
-	sendProgressMsg := func(text string) int32 {
-		opts := &telegram.SendOptions{ParseMode: telegram.HTML}
-		if replyToMsgID > 0 {
-			opts.ReplyID = int32(replyToMsgID)
-		}
-		m, err := b.client.SendMessage(chatID, text, opts)
-		if err != nil {
-			return 0
-		}
-		return int32(m.ID)
-	}
-
 	var lastUIUpdateSteps int
 
 	buildProgressText := func() string {
@@ -697,27 +685,28 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 
 	editProgress := func(force bool) {
 		mu.Lock()
-		msgID := progressMsgID
-		text := buildProgressText()
-		mustSend := progressMsgID == 0
-		shouldEdit := force || (len(steps)-lastUIUpdateSteps >= 3) || time.Since(lastEditAt) > 4*time.Second
-		mu.Unlock()
+		defer mu.Unlock()
 
-		if mustSend {
-			id := sendProgressMsg(text)
-			mu.Lock()
-			if progressMsgID == 0 {
-				progressMsgID = id
+		text := buildProgressText()
+		if progressMsgID == 0 {
+			opts := &telegram.SendOptions{ParseMode: telegram.HTML}
+			if replyToMsgID > 0 {
+				opts.ReplyID = int32(replyToMsgID)
+			}
+			m, err := b.client.SendMessage(chatID, text, opts)
+			if err == nil {
+				progressMsgID = int32(m.ID)
 				lastEditAt = time.Now()
 				lastUIUpdateSteps = len(steps)
 			}
-			mu.Unlock()
-		} else if msgID != 0 && shouldEdit {
-			b.client.EditMessage(chatID, msgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
-			mu.Lock()
+			return
+		}
+		// Only edit every 5 steps or 6 seconds — reduces spam for fast parallel tool calls
+		shouldEdit := force || (len(steps)-lastUIUpdateSteps >= 5) || time.Since(lastEditAt) > 6*time.Second
+		if shouldEdit {
+			b.client.EditMessage(chatID, progressMsgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
 			lastEditAt = time.Now()
 			lastUIUpdateSteps = len(steps)
-			mu.Unlock()
 		}
 	}
 

@@ -81,6 +81,8 @@ var All = []*ToolDef{
 
 	ScheduleTask,
 	CancelTask,
+	PauseTask,
+	ResumeTask,
 	ListTasks,
 
 	FlightAirportSearch,
@@ -221,4 +223,22 @@ var All = []*ToolDef{
 	UUIDGenerate,
 	PasswordGenerate,
 	JokeFetch,
+
+	MonitorAdd,
+	MonitorList,
+	MonitorRemove,
+
+	CodeReview,
+
+	ScreenCapture,
+
+	ToolCreate,
+	ToolListCustom,
+	ToolDeleteCustom,
+	ToolRunCustom,
+
+	MemoryExtract,
+	MemoryRecall,
+	MemoryForget,
+	MemoryStats,
 }

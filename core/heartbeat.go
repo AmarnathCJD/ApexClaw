@@ -26,6 +26,13 @@ type ScheduledTask struct {
 	Label       string `json:"label"`
 	CreatedAt   string `json:"created_at"`
 	ScheduledAt string `json:"scheduled_at"`
+	RunCount    int    `json:"run_count"`
+	LastResult  string `json:"last_result"`
+	Enabled     bool   `json:"enabled"`
+	MaxRuns     int    `json:"max_runs"`
+	OnFailure   string `json:"on_failure"`
+	RetryAt     string `json:"retry_at"`
+	Tags        string `json:"tags"`
 }
 
 type heartbeatStore struct {
@@ -84,10 +91,15 @@ func ScheduleTask(t ScheduledTask) {
 	if t.ScheduledAt == "" {
 		t.ScheduledAt = t.RunAt
 	}
+	if !t.Enabled {
+		t.Enabled = true
+	}
 
 	hbStore.mu.Lock()
 	for i, existing := range hbStore.tasks {
 		if existing.Label == t.Label {
+			t.RunCount = existing.RunCount
+			t.LastResult = existing.LastResult
 			hbStore.tasks[i] = t
 			hbStore.mu.Unlock()
 			persistHeartbeatTasks()
@@ -99,6 +111,43 @@ func ScheduleTask(t ScheduledTask) {
 	hbStore.mu.Unlock()
 	persistHeartbeatTasks()
 	log.Printf("[HEARTBEAT] added task %q → run_at=%s owner=%s chat=%d", t.Label, t.RunAt, t.OwnerID, t.TelegramID)
+}
+
+func PauseTask(labelOrID string) bool {
+	hbStore.mu.Lock()
+	defer hbStore.mu.Unlock()
+	for i, t := range hbStore.tasks {
+		if t.Label == labelOrID || t.ID == labelOrID {
+			hbStore.tasks[i].Enabled = false
+			go persistHeartbeatTasks()
+			return true
+		}
+	}
+	return false
+}
+
+func ResumeTask(labelOrID string) bool {
+	hbStore.mu.Lock()
+	defer hbStore.mu.Unlock()
+	for i, t := range hbStore.tasks {
+		if t.Label == labelOrID || t.ID == labelOrID {
+			hbStore.tasks[i].Enabled = true
+			go persistHeartbeatTasks()
+			return true
+		}
+	}
+	return false
+}
+
+func GetTaskStats(labelOrID string) (runCount int, lastResult string, found bool) {
+	hbStore.mu.Lock()
+	defer hbStore.mu.Unlock()
+	for _, t := range hbStore.tasks {
+		if t.Label == labelOrID || t.ID == labelOrID {
+			return t.RunCount, t.LastResult, true
+		}
+	}
+	return 0, "", false
 }
 
 func CancelTask(labelOrID string) bool {
@@ -131,14 +180,39 @@ func runHeartbeatTick() {
 	hbStore.mu.Lock()
 	var remaining []ScheduledTask
 	var toRun []ScheduledTask
+
 	for _, t := range hbStore.tasks {
+		// retry_at override (set on failure when OnFailure="retry")
+		if t.RetryAt != "" {
+			retryAt, err := time.Parse(time.RFC3339, t.RetryAt)
+			if err == nil && (now.After(retryAt) || now.Equal(retryAt)) {
+				t.RetryAt = ""
+				toRun = append(toRun, t)
+				if t.Repeat != "" {
+					t.RunAt = calcNextRun(retryAt, now, t.Repeat).Format(time.RFC3339)
+				}
+				remaining = append(remaining, t)
+				continue
+			} else if err == nil {
+				remaining = append(remaining, t)
+				continue
+			}
+		}
+
 		runAt, err := time.Parse(time.RFC3339, t.RunAt)
 		if err != nil {
 			log.Printf("[HEARTBEAT] bad run_at for task %q: %v — dropping", t.Label, err)
 			continue
 		}
+
 		if now.After(runAt) || now.Equal(runAt) {
-			toRun = append(toRun, t)
+			if t.Enabled {
+				if t.MaxRuns > 0 && t.RunCount >= t.MaxRuns {
+					log.Printf("[HEARTBEAT] task %q hit max_runs=%d — removing", t.Label, t.MaxRuns)
+					continue
+				}
+				toRun = append(toRun, t)
+			}
 			if t.Repeat != "" {
 				nextRun := calcNextRun(runAt, now, t.Repeat)
 				if nextRun.After(runAt) {
@@ -149,7 +223,6 @@ func runHeartbeatTick() {
 		} else {
 			remaining = append(remaining, t)
 		}
-
 	}
 	hbStore.tasks = remaining
 	hbStore.mu.Unlock()
@@ -200,31 +273,80 @@ func calcNextRun(runAt, now time.Time, repeat string) time.Time {
 }
 
 func fireHeartbeatTask(t ScheduledTask) {
-	log.Printf("[HEARTBEAT] firing task %q (prompt: %q) → chat=%d", t.Label, t.Prompt, t.TelegramID)
+	log.Printf("[HEARTBEAT] firing task %q (#%d) → chat=%d", t.Label, t.RunCount+1, t.TelegramID)
 	ownerID := t.OwnerID
 	if ownerID == "" {
 		ownerID = Cfg.OwnerID
 	}
 
 	session := NewAgentSession(GlobalRegistry, Cfg.DefaultModel, "telegram")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	reply, err := session.RunStream(ctx, ownerID, t.Prompt, nil)
-	if err != nil {
-		log.Printf("[HEARTBEAT] task %q error: %v", t.Label, err)
+
+	failed := err != nil || reply == ""
+	if failed {
+		log.Printf("[HEARTBEAT] task %q failed: err=%v empty=%v", t.Label, err, reply == "")
+		onFailure := strings.ToLower(t.OnFailure)
+		if onFailure == "" {
+			onFailure = "skip"
+		}
+		switch onFailure {
+		case "retry":
+			retryAt := time.Now().Add(5 * time.Minute).Format(time.RFC3339)
+			hbStore.mu.Lock()
+			for i, st := range hbStore.tasks {
+				if st.Label == t.Label {
+					hbStore.tasks[i].RetryAt = retryAt
+					break
+				}
+			}
+			hbStore.mu.Unlock()
+			go persistHeartbeatTasks()
+			log.Printf("[HEARTBEAT] task %q scheduled retry at %s", t.Label, retryAt)
+		case "disable":
+			hbStore.mu.Lock()
+			for i, st := range hbStore.tasks {
+				if st.Label == t.Label {
+					hbStore.tasks[i].Enabled = false
+					break
+				}
+			}
+			hbStore.mu.Unlock()
+			go persistHeartbeatTasks()
+			log.Printf("[HEARTBEAT] task %q disabled after failure", t.Label)
+			if heartbeatTGClient != nil && t.TelegramID != 0 {
+				heartbeatTGClient.SendMessage(t.TelegramID,
+					fmt.Sprintf("⚠️ Scheduled task <b>%s</b> was disabled after a failure.", escapeHTML(t.Label)),
+					&telegram.SendOptions{ParseMode: telegram.HTML})
+			}
+		}
 		return
 	}
-	if reply == "" {
-		log.Printf("[HEARTBEAT] task %q produced empty reply", t.Label)
-		return
+
+	// Update run stats
+	snippet := reply
+	if len(snippet) > 100 {
+		snippet = snippet[:100]
 	}
+	hbStore.mu.Lock()
+	for i, st := range hbStore.tasks {
+		if st.Label == t.Label {
+			hbStore.tasks[i].RunCount++
+			hbStore.tasks[i].LastResult = snippet
+			break
+		}
+	}
+	hbStore.mu.Unlock()
+	go persistHeartbeatTasks()
+
 	if heartbeatTGClient == nil || t.TelegramID == 0 {
 		log.Printf("[HEARTBEAT] task %q: no TG client or TelegramID=0, cannot deliver", t.Label)
 		return
 	}
 
+	reply = cleanResultForTelegram(reply)
 	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
 	if t.MessageID != 0 {
 		opts.ReplyID = int32(t.MessageID)
@@ -241,12 +363,29 @@ func ListHeartbeatTasks() string {
 		return "No scheduled tasks."
 	}
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "<b>Scheduled Tasks (%d)</b>\n\n", len(hbStore.tasks))
 	for _, t := range hbStore.tasks {
 		repeat := t.Repeat
 		if repeat == "" {
 			repeat = "once"
 		}
-		fmt.Fprintf(&sb, "• <b>%s</b> — %s\n  next: %s | repeat: %s\n", t.Label, t.Prompt, t.RunAt, repeat)
+		status := "✅"
+		if !t.Enabled {
+			status = "⏸"
+		} else if t.RetryAt != "" {
+			status = "🔄"
+		}
+		maxInfo := ""
+		if t.MaxRuns > 0 {
+			maxInfo = fmt.Sprintf(" | %d/%d runs", t.RunCount, t.MaxRuns)
+		} else if t.RunCount > 0 {
+			maxInfo = fmt.Sprintf(" | ran %d×", t.RunCount)
+		}
+		fmt.Fprintf(&sb, "%s <b>%s</b>%s\n  next: <code>%s</code> | %s\n",
+			status, escapeHTML(t.Label), maxInfo, t.RunAt, repeat)
+		if t.Tags != "" {
+			fmt.Fprintf(&sb, "  tags: %s\n", escapeHTML(t.Tags))
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

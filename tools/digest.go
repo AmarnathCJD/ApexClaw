@@ -73,7 +73,7 @@ var DailyDigest = &ToolDef{
 			return "Error: scheduler not initialized"
 		}
 
-		ScheduleTaskFn("", "daily_digest", prompt, next.Format(time.RFC3339), "daily", userID, telegramID, 0, 0)
+		ScheduleTaskFn("", "daily_digest", prompt, next.Format(time.RFC3339), "daily", userID, "", "", 0, telegramID, 0, 0)
 
 		return fmt.Sprintf(
 			"Daily digest scheduled at %02d:%02d IST every day.\nFirst delivery: %s",

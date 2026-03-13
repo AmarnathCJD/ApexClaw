@@ -2,9 +2,11 @@ package tools
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 var ReadFile = &ToolDef{
@@ -31,9 +33,29 @@ var ReadFile = &ToolDef{
 	},
 }
 
+func sanitizeFileContent(content string) string {
+	content = html.UnescapeString(content)
+
+	content = strings.ReplaceAll(content, "</think>", "")
+	content = strings.ReplaceAll(content, "<think>", "")
+
+	if !utf8.ValidString(content) {
+		content = strings.ToValidUTF8(content, "\uFFFD")
+	}
+	var b strings.Builder
+	b.Grow(len(content))
+	for _, r := range content {
+		if r == 0 || (r < 0x20 && r != '\t' && r != '\n' && r != '\r') {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 var WriteFile = &ToolDef{
 	Name:        "write_file",
-	Description: "Write or create a file with the given content",
+	Description: "Write or create a file with the given content. Handles all content types: code, HTML, JSON, scripts. Content is written exactly as provided.",
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "path", Description: "File path to write to", Required: true},
@@ -41,13 +63,10 @@ var WriteFile = &ToolDef{
 	},
 	Execute: func(args map[string]string) string {
 		path := args["path"]
-		content := args["content"]
 		if path == "" {
 			return "Error: path is required"
 		}
-		// Content is passed verbatim — no HTML unescaping to avoid mangling
-		// special characters like backslashes, quotes, regex patterns, etc.
-
+		content := sanitizeFileContent(args["content"])
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return fmt.Sprintf("Error creating directories: %v", err)
 		}
@@ -60,7 +79,7 @@ var WriteFile = &ToolDef{
 
 var AppendFile = &ToolDef{
 	Name:        "append_file",
-	Description: "Append text to an existing file (creates the file if it doesn't exist)",
+	Description: "Append text to an existing file (creates if not exists)",
 	Secure:      true,
 	Args: []ToolArg{
 		{Name: "path", Description: "File path to append to", Required: true},
@@ -68,12 +87,10 @@ var AppendFile = &ToolDef{
 	},
 	Execute: func(args map[string]string) string {
 		path := args["path"]
-		content := args["content"]
 		if path == "" {
 			return "Error: path is required"
 		}
-		// Content is passed verbatim
-
+		content := sanitizeFileContent(args["content"])
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)

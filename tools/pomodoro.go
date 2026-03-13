@@ -66,7 +66,7 @@ var Pomodoro = &ToolDef{
 					"Send an encouraging message telling the user their session is done and break starts now.",
 				i, sessions, breakMin,
 			)
-			ScheduleTaskFn("", workLabel, workPrompt, workAt, "", userID, telegramID, 0, 0)
+			ScheduleTaskFn("", workLabel, workPrompt, workAt, "", userID, "", "", 0, telegramID, 0, 0)
 			scheduled = append(scheduled, fmt.Sprintf("Session %d ends at %s", i, now.Add(offset).Format("15:04")))
 
 			if i < sessions {
@@ -78,7 +78,7 @@ var Pomodoro = &ToolDef{
 						"Send a motivating message telling the user break is done and to get back to work.",
 					i, sessions-1, i+1,
 				)
-				ScheduleTaskFn("", breakLabel, breakPrompt, breakAt, "", userID, telegramID, 0, 0)
+				ScheduleTaskFn("", breakLabel, breakPrompt, breakAt, "", userID, "", "", 0, telegramID, 0, 0)
 				scheduled = append(scheduled, fmt.Sprintf("Break %d ends at %s", i, now.Add(offset).Format("15:04")))
 			}
 		}

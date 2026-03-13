@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -37,7 +39,7 @@ func GetTaskContext() map[string]any {
 }
 
 func RegisterBuiltinTools(reg *ToolRegistry) {
-	tools.ScheduleTaskFn = func(id, label, prompt, runAt, repeat, ownerID string, telegramID, messageID, groupID int64) {
+	tools.ScheduleTaskFn = func(id, label, prompt, runAt, repeat, ownerID, onFailure, tags string, maxRuns int, telegramID, messageID, groupID int64) {
 		ScheduleTask(ScheduledTask{
 			ID:         id,
 			Label:      label,
@@ -45,12 +47,17 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 			RunAt:      runAt,
 			Repeat:     repeat,
 			OwnerID:    ownerID,
+			OnFailure:  onFailure,
+			Tags:       tags,
+			MaxRuns:    maxRuns,
 			TelegramID: telegramID,
 			MessageID:  messageID,
 			GroupID:    groupID,
 		})
 	}
 	tools.CancelTaskFn = CancelTask
+	tools.PauseTaskFn = PauseTask
+	tools.ResumeTaskFn = ResumeTask
 	tools.ListTasksFn = ListHeartbeatTasks
 
 	tools.GetDebugSession = func(senderID string) tools.DebugSessionInterface {
@@ -105,6 +112,67 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.TGPromoteAdminFn = TGPromoteAdmin
 	tools.TGDemoteAdminFn = TGDemoteAdmin
 	tools.TGSendLocationFn = TGSendLocation
+
+	tools.MonitorAlertFn = func(ownerID string, telegramID int64, label, url, diff string) {
+		if heartbeatTGClient == nil || telegramID == 0 {
+			return
+		}
+		msg := "<b>🔔 Monitor Alert: " + escapeHTML(label) + "</b>\n" +
+			"URL: <code>" + escapeHTML(url) + "</code>\n" +
+			"Change: " + escapeHTML(diff)
+		heartbeatTGClient.SendMessage(telegramID, msg, nil)
+	}
+
+	tools.ScreenAnalyzeFn = func(imageB64, prompt string) string {
+		return analyzeImageB64(imageB64, prompt)
+	}
+
+	tools.CustomToolRegisterFn = func(name, description, argsJSON, code, language string) {
+		registerDynamicTool(reg, name, description, argsJSON, code, language)
+	}
+}
+
+func registerDynamicTool(reg *ToolRegistry, name, description, argsJSON, code, language string) {
+	def := &ToolDef{
+		Name:        name,
+		Description: description,
+		Execute: func(args map[string]string) string {
+			return runCustomTool(name, code, args)
+		},
+	}
+	reg.Register(def)
+}
+
+func runCustomTool(name, code string, args map[string]string) string {
+	argsJSON := "{}"
+	if len(args) > 0 {
+		parts := make([]string, 0, len(args))
+		for k, v := range args {
+			parts = append(parts, `"`+escapeJSON(k)+`":"`+escapeJSON(v)+`"`)
+		}
+		argsJSON = "{" + strings.Join(parts, ",") + "}"
+	}
+	runner := "import json\nargs = json.loads(r'''" + argsJSON + "''')\n" + code
+	return execPythonCode(runner)
+}
+
+func execPythonCode(code string) string {
+	f, err := os.CreateTemp("", "claw_dyn_*.py")
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+	defer os.Remove(f.Name())
+	f.WriteString(code)
+	f.Close()
+	out, err := exec.Command("python3", f.Name()).CombinedOutput()
+	if err != nil {
+		return "Error: " + err.Error() + "\n" + string(out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func analyzeImageB64(imageB64, prompt string) string {
+	return "(Vision analysis not yet integrated)"
 }
 
 func bridgeArgs(args []tools.ToolArg) []ToolArg {
