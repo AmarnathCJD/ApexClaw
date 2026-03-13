@@ -651,33 +651,28 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 
 	buildProgressText := func() string {
 		if len(steps) == 0 {
-			return "Starting..."
+			return "<i>Starting...</i>"
 		}
-
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "Working... (step %d)\n\n", len(steps))
 
 		show := steps
 		if len(show) > 5 {
 			show = show[len(show)-5:]
 		}
 
-		for i, s := range show {
+		var sb strings.Builder
+		for _, s := range show {
 			switch {
 			case s.status == "running":
-				fmt.Fprintf(&sb, "[RUNNING] %s\n", escapeHTML(s.label))
+				fmt.Fprintf(&sb, "⟳ <i>%s</i>\n", escapeHTML(s.label))
 			case s.status == "done":
-				fmt.Fprintf(&sb, "[DONE] %s\n", escapeHTML(s.label))
+				fmt.Fprintf(&sb, "✓ %s\n", escapeHTML(s.label))
 			case strings.HasPrefix(s.status, "failed:"):
 				errText := strings.TrimPrefix(s.status, "failed:")
 				errText = strings.TrimSpace(errText)
-				if len(errText) > 60 {
-					errText = errText[:60] + "..."
+				if len(errText) > 80 {
+					errText = errText[:80] + "..."
 				}
-				fmt.Fprintf(&sb, "[FAILED] %s\n   %s\n", escapeHTML(s.label), escapeHTML(errText))
-			}
-			if i < len(show)-1 {
-				fmt.Fprintf(&sb, "\n")
+				fmt.Fprintf(&sb, "✗ %s\n<code>%s</code>\n", escapeHTML(s.label), escapeHTML(errText))
 			}
 		}
 		return strings.TrimRight(sb.String(), "\n")

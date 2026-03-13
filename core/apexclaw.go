@@ -772,6 +772,22 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 	}
 	duration := time.Since(start)
 
+	if strings.HasPrefix(result, "__DEEPWORK:") {
+		var n int
+		rest := strings.TrimPrefix(result, "__DEEPWORK:")
+		if idx := strings.Index(rest, "__\n"); idx != -1 {
+			fmt.Sscanf(rest[:idx], "%d", &n)
+			result = strings.TrimPrefix(rest, rest[:idx+3]) // strip sentinel line
+		}
+		if n > 0 {
+			plan := ""
+			if p, ok := args["plan"]; ok {
+				plan = p
+			}
+			s.SetDeepWork(n, plan)
+		}
+	}
+
 	// Record trace if debug mode enabled
 	if s.debugMode {
 		resultSnippet := result

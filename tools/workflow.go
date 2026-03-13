@@ -4,10 +4,11 @@ import (
 	"fmt"
 )
 
-// DeepWork enables extended execution mode for complex multi-step tasks
+// DeepWork enables extended execution mode for complex multi-step tasks.
+// Returns a "__DEEPWORK:<n>__" sentinel that executeTool intercepts to call SetDeepWork.
 var DeepWork = &ToolDef{
 	Name:        "deep_work",
-	Description: "Enter deep work mode for complex multi-step tasks. Raises iteration limit to 50. Call this FIRST for tasks needing many steps (deploying, installing, browser workflows, etc.). Afterward, just work naturally - no need to report progress manually.",
+	Description: "Enter deep work mode for complex multi-step tasks. Raises iteration limit to 50. Call this FIRST for tasks needing many steps (deploying, installing, browser workflows, etc.). Afterward, just work naturally.",
 	Args: []ToolArg{
 		{Name: "plan", Description: "Brief plan of steps you will execute", Required: true},
 		{Name: "max_steps", Description: "Estimated tool calls needed (default: 30, max: 50)", Required: false},
@@ -30,7 +31,7 @@ var DeepWork = &ToolDef{
 			maxSteps = 50
 		}
 
-		// Deep work activated - iteration limit raised, natural progress reporting enabled
-		return fmt.Sprintf("🚀 Deep work mode activated\n\nPlan: %s\n\nMax steps: %d\n\nI'll work through this and report only major progress milestones naturally (e.g., 'I'm installing the CLI', 'CLI is ready', 'Deployment complete'). No spam, just important updates.", plan, maxSteps)
+		// Sentinel prefix — executeTool in apexclaw.go intercepts this and calls SetDeepWork.
+		return fmt.Sprintf("__DEEPWORK:%d__\nDeep work mode activated. Plan: %s\nMax steps: %d. Work naturally — no manual progress reporting needed.", maxSteps, plan, maxSteps)
 	},
 }

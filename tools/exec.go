@@ -52,12 +52,14 @@ var Exec = &ToolDef{
 		defer cancel()
 
 		envVars := os.Environ()
-		envVars = append(envVars, "CI=true", "NPM_CONFIG_PROGRESS=false")
+		envVars = append(envVars, "CI=true", "NPM_CONFIG_PROGRESS=false", "DEBIAN_FRONTEND=noninteractive")
 
 		var out []byte
 		var err error
 		if runtime.GOOS == "windows" {
-			out, err = osexec.CommandContext(ctx, "cmd", "/c", cmd).CombinedOutput()
+			c := osexec.CommandContext(ctx, "cmd", "/c", cmd)
+			c.Env = envVars
+			out, err = c.CombinedOutput()
 		} else {
 			c := osexec.CommandContext(ctx, "sh", "-c", cmd)
 			c.Env = envVars
@@ -85,14 +87,18 @@ func runShellCmd(cmd string, timeoutSec int) (string, error, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	var out []byte
-	var err error
-	if runtime.GOOS == "windows" {
-		out, err = osexec.CommandContext(ctx, "cmd", "/c", cmd).CombinedOutput()
-	} else {
-		out, err = osexec.CommandContext(ctx, "sh", "-c", cmd).CombinedOutput()
-	}
+	envVars := os.Environ()
+	envVars = append(envVars, "CI=true", "NPM_CONFIG_PROGRESS=false", "DEBIAN_FRONTEND=noninteractive")
 
+	var c *osexec.Cmd
+	if runtime.GOOS == "windows" {
+		c = osexec.CommandContext(ctx, "cmd", "/c", cmd)
+	} else {
+		c = osexec.CommandContext(ctx, "sh", "-c", cmd)
+	}
+	c.Env = envVars
+
+	out, err := c.CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if ctx.Err() == context.DeadlineExceeded {
 		return result, fmt.Errorf("timeout after %ds", timeoutSec), true

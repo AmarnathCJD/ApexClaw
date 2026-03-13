@@ -47,7 +47,7 @@ var Cfg = Config{
 	DefaultModel:     "GLM-4.7",
 	OwnerID:          "",
 	SudoIDs:          []string{},
-	MaxIterations:    10,
+	MaxIterations:    20,
 	WAOwnerID:        "",
 	WebPort:          ":8080",
 	WebLoginCode:     "123456",
