@@ -177,7 +177,15 @@ func buildSystemPrompt(reg *ToolRegistry, platform string) string {
 				"Be extremely concise. WhatsApp messages should be short and direct.\n\n" +
 
 				"## WhatsApp Context\n" +
-				"Each message has a [WA Context] header. Use sender_id and chat_id for context.\n\n",
+				"Each message has a [WA Context] header. Use sender_id and chat_id for context.\n\n" +
+
+				"## WhatsApp Tools\n" +
+				"Send messages/files to ANY WhatsApp number or group:\n" +
+				"- wa_send_message jid=\"919276543210\" text=\"Hello\" — send text (jid = phone with country code, no +)\n" +
+				"- wa_send_file jid=\"919276543210\" path=\"/file.jpg\" caption=\"...\" — send media\n" +
+				"- wa_get_contacts — list contacts with JIDs\n" +
+				"- wa_get_groups — list groups with JIDs\n" +
+				"Cross-platform: you can also use tg_send_message to push content to Telegram from WhatsApp.\n\n",
 		)
 	default:
 		sb.WriteString(
@@ -749,7 +757,12 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 	if idx := strings.Index(senderID, ":"); idx != -1 {
 		realUserID = senderID[:idx]
 	}
-	if t.Secure && realUserID != Cfg.OwnerID && realUserID != "web_"+Cfg.OwnerID {
+	// wa_ and web_ prefix senderIDs are owner sessions — strip prefix for comparison.
+	strippedID := strings.TrimPrefix(strings.TrimPrefix(realUserID, "wa_"), "web_")
+	isOwner := realUserID == Cfg.OwnerID ||
+		strippedID == Cfg.OwnerID ||
+		(Cfg.WAOwnerID != "" && strippedID == Cfg.WAOwnerID)
+	if t.Secure && !isOwner {
 		Log.Debugf("access denied: user %q tried secure tool %q", realUserID, name)
 		return fmt.Sprintf("Access denied: tool %q is restricted to the bot owner.", name)
 	}
@@ -880,9 +893,23 @@ func toolLabel(name, argsJSON string) string {
 			return "github: " + short(p, 50)
 		}
 	case "tg_send_message":
-		return "send message"
+		return "send TG message"
 	case "tg_send_file":
-		return "send file"
+		return "send TG file"
+	case "wa_send_message":
+		if j := args["jid"]; j != "" {
+			return "WA → " + j
+		}
+		return "send WA message"
+	case "wa_send_file":
+		if j := args["jid"]; j != "" {
+			return "WA file → " + j
+		}
+		return "send WA file"
+	case "wa_get_contacts":
+		return "WA contacts"
+	case "wa_get_groups":
+		return "WA groups"
 	case "schedule_task":
 		if l := args["label"]; l != "" {
 			return "schedule: " + l
@@ -892,6 +919,12 @@ func toolLabel(name, argsJSON string) string {
 	case "progress":
 		if m := args["message"]; m != "" {
 			return short(m, 60)
+		}
+	}
+	// Fallback: show name + first arg value if any, so label is never bare "exec"
+	for _, v := range args {
+		if v != "" {
+			return name + ": " + short(v, 50)
 		}
 	}
 	return name

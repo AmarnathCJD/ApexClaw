@@ -148,6 +148,11 @@ var All = []*ToolDef{
 	TGPromoteAdmin,
 	TGDemoteAdmin,
 
+	WASendMessage,
+	WASendFile,
+	WAGetContacts,
+	WAGetGroups,
+
 	StockPrice,
 
 	Pomodoro,

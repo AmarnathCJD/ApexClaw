@@ -388,6 +388,97 @@ func (b *WhatsAppBot) newStreamHandler(chatID types.JID, senderID string) (func(
 	return onChunk, flush, done
 }
 
+// WABotSendMessage sends a text message via the global WA bot to the given JID.
+// jid can be a plain phone number ("9193786543210") or full JID.
+func WABotSendMessage(jid, text string) string {
+	if waBot == nil {
+		return "Error: WhatsApp not connected"
+	}
+	if !strings.Contains(jid, "@") {
+		jid = jid + "@s.whatsapp.net"
+	}
+	parsedJID, err := types.ParseJID(jid)
+	if err != nil {
+		return fmt.Sprintf("Error: invalid JID %q: %v", jid, err)
+	}
+	_, err = waBot.client.SendMessage(context.Background(), parsedJID, &waE2E.Message{
+		Conversation: proto.String(text),
+	})
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	return "Sent"
+}
+
+// WABotSendFile sends a media file via the global WA bot.
+func WABotSendFile(jid, filePath, caption, mediaType string) string {
+	if waBot == nil {
+		return "Error: WhatsApp not connected"
+	}
+	if !strings.Contains(jid, "@") {
+		jid = jid + "@s.whatsapp.net"
+	}
+	parsedJID, err := types.ParseJID(jid)
+	if err != nil {
+		return fmt.Sprintf("Error: invalid JID %q: %v", jid, err)
+	}
+	if err := waBot.SendMedia(parsedJID, filePath, caption, mediaType); err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	return "Sent"
+}
+
+// WABotGetContacts returns a list of saved WA contacts.
+func WABotGetContacts() string {
+	if waBot == nil {
+		return "Error: WhatsApp not connected"
+	}
+	contacts, err := waBot.client.Store.Contacts.GetAllContacts(context.Background())
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	if len(contacts) == 0 {
+		return "No contacts found"
+	}
+	var sb strings.Builder
+	count := 0
+	for jid, info := range contacts {
+		if count >= 100 {
+			fmt.Fprintf(&sb, "... and %d more\n", len(contacts)-count)
+			break
+		}
+		name := info.FullName
+		if name == "" {
+			name = info.PushName
+		}
+		if name == "" {
+			name = jid.User
+		}
+		fmt.Fprintf(&sb, "%s: %s\n", name, jid.String())
+		count++
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// WABotGetGroups returns joined WA groups.
+func WABotGetGroups() string {
+	if waBot == nil {
+		return "Error: WhatsApp not connected"
+	}
+	groups, err := waBot.client.GetJoinedGroups(context.Background())
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	if len(groups) == 0 {
+		return "Not in any groups"
+	}
+	var sb strings.Builder
+	for _, g := range groups {
+		fmt.Fprintf(&sb, "%s: %s\n", g.Name, g.JID.String())
+	}
+	return strings.TrimSpace(sb.String())
+}
+
 func cleanResultForWhatsApp(result string) string {
 	for {
 		start := strings.Index(result, "\x00PROGRESS:")

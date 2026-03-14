@@ -113,6 +113,11 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.TGDemoteAdminFn = TGDemoteAdmin
 	tools.TGSendLocationFn = TGSendLocation
 
+	tools.WASendMessageFn = WABotSendMessage
+	tools.WASendFileFn = WABotSendFile
+	tools.WAGetContactsFn = WABotGetContacts
+	tools.WAGetGroupsFn = WABotGetGroups
+
 	tools.MonitorAlertFn = func(ownerID string, telegramID int64, label, url, diff string) {
 		if heartbeatTGClient == nil || telegramID == 0 {
 			return
