@@ -145,7 +145,16 @@ func makeUpstreamRequest(ctx context.Context, client *http.Client, token string,
 	autoWebSearch := IsSearchModel(model)
 
 	var upstreamMessages []map[string]any
-	for _, m := range messages {
+	for i, m := range messages {
+		if m.Role == "system" {
+			if i == 0 {
+				upstreamMessages = append(upstreamMessages,
+					map[string]any{"role": "user", "content": "[SYSTEM INSTRUCTIONS — follow these exactly for the entire conversation]\n" + m.Content},
+					map[string]any{"role": "assistant", "content": "Understood. I will follow these instructions exactly."},
+				)
+			}
+			continue
+		}
 		upstreamMessages = append(upstreamMessages, map[string]any{
 			"role":    m.Role,
 			"content": m.Content,
