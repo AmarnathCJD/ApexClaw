@@ -10,20 +10,32 @@ var WASendMessageFn func(jid, text string) string
 var WASendFileFn func(jid, filePath, caption, mediaType string) string
 var WAGetContactsFn func() string
 var WAGetGroupsFn func() string
+var WAOwnerIDFn func() string
+
+func resolveWAJID(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" && WAOwnerIDFn != nil {
+		jid = WAOwnerIDFn()
+	}
+	return jid
+}
 
 var WASendMessage = &ToolDef{
 	Name:        "wa_send_message",
-	Description: "Send a WhatsApp text message to a phone number or group JID. jid format: '919876543210' (no +, no @s.whatsapp.net needed) or group JID like '1234567890-1234567890@g.us'.",
+	Description: "Send a WhatsApp text message. jid: phone with country code e.g. '919876543210', or group JID. Omit jid to send to the WA owner.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "jid", Description: "Recipient phone number (digits only, with country code) or group JID", Required: true},
+		{Name: "jid", Description: "Recipient phone number (digits only, country code) or group JID. Omit to send to WA owner.", Required: false},
 		{Name: "text", Description: "Message text to send", Required: true},
 	},
 	ExecuteWithContext: func(args map[string]string, senderID string) string {
-		jid := strings.TrimSpace(args["jid"])
+		jid := resolveWAJID(args["jid"])
 		text := strings.TrimSpace(args["text"])
-		if jid == "" || text == "" {
-			return "Error: jid and text are required"
+		if jid == "" {
+			return "Error: jid required (no WA_OWNER_ID configured as fallback)"
+		}
+		if text == "" {
+			return "Error: text is required"
 		}
 		if WASendMessageFn == nil {
 			return "Error: WhatsApp not initialized"
@@ -34,19 +46,22 @@ var WASendMessage = &ToolDef{
 
 var WASendFile = &ToolDef{
 	Name:        "wa_send_file",
-	Description: "Send a file (image/video/audio/document) over WhatsApp. type: image, video, audio, document (default: auto-detect from extension).",
+	Description: "Send a file (image/video/audio/document) over WhatsApp. Omit jid to send to the WA owner.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "jid", Description: "Recipient phone number (digits only, with country code) or group JID", Required: true},
+		{Name: "jid", Description: "Recipient phone number or group JID. Omit to send to WA owner.", Required: false},
 		{Name: "path", Description: "Absolute local file path to send", Required: true},
 		{Name: "caption", Description: "Optional caption for the file", Required: false},
 		{Name: "type", Description: "Media type: image, video, audio, document (default: auto)", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, senderID string) string {
-		jid := strings.TrimSpace(args["jid"])
+		jid := resolveWAJID(args["jid"])
 		path := strings.TrimSpace(args["path"])
-		if jid == "" || path == "" {
-			return "Error: jid and path are required"
+		if jid == "" {
+			return "Error: jid required (no WA_OWNER_ID configured as fallback)"
+		}
+		if path == "" {
+			return "Error: path is required"
 		}
 		if WASendFileFn == nil {
 			return "Error: WhatsApp not initialized"

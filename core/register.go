@@ -117,6 +117,7 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.WASendFileFn = WABotSendFile
 	tools.WAGetContactsFn = WABotGetContacts
 	tools.WAGetGroupsFn = WABotGetGroups
+	tools.WAOwnerIDFn = func() string { return Cfg.WAOwnerID }
 
 	tools.MonitorAlertFn = func(ownerID string, telegramID int64, label, url, diff string) {
 		if heartbeatTGClient == nil || telegramID == 0 {

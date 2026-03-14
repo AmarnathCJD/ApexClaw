@@ -181,11 +181,12 @@ func buildSystemPrompt(reg *ToolRegistry, platform string) string {
 
 				"## WhatsApp Tools\n" +
 				"Send messages/files to ANY WhatsApp number or group:\n" +
-				"- wa_send_message jid=\"919276543210\" text=\"Hello\" — send text (jid = phone with country code, no +)\n" +
-				"- wa_send_file jid=\"919276543210\" path=\"/file.jpg\" caption=\"...\" — send media\n" +
+				"- wa_send_message text=\"Hello\" — send to WA owner (jid omitted = default to owner)\n" +
+				"- wa_send_message jid=\"919876543210\" text=\"Hello\" — send to specific number\n" +
+				"- wa_send_file path=\"/file.jpg\" — send file to WA owner\n" +
 				"- wa_get_contacts — list contacts with JIDs\n" +
 				"- wa_get_groups — list groups with JIDs\n" +
-				"Cross-platform: you can also use tg_send_message to push content to Telegram from WhatsApp.\n\n",
+				"Omitting jid always sends to the WA owner. Cross-platform: use tg_send_message to push to Telegram.\n\n",
 		)
 	default:
 		sb.WriteString(
