@@ -144,21 +144,33 @@ func makeUpstreamRequest(ctx context.Context, client *http.Client, token string,
 	enableThinking := IsThinkingModel(model)
 	autoWebSearch := IsSearchModel(model)
 
-	var upstreamMessages []map[string]any
-	for i, m := range messages {
+	var systemTexts []string
+	var nonSystemMessages []Message
+	for _, m := range messages {
 		if m.Role == "system" {
-			if i == 0 {
-				upstreamMessages = append(upstreamMessages,
-					map[string]any{"role": "user", "content": "[SYSTEM INSTRUCTIONS — follow these exactly for the entire conversation]\n" + m.Content},
-					map[string]any{"role": "assistant", "content": "Understood. I will follow these instructions exactly."},
-				)
+			if m.Content != "" {
+				systemTexts = append(systemTexts, m.Content)
 			}
-			continue
+		} else {
+			nonSystemMessages = append(nonSystemMessages, m)
 		}
+	}
+
+	var upstreamMessages []map[string]any
+	for _, m := range nonSystemMessages {
 		upstreamMessages = append(upstreamMessages, map[string]any{
 			"role":    m.Role,
 			"content": m.Content,
 		})
+	}
+
+	if len(systemTexts) > 0 {
+		combined := strings.Join(systemTexts, "\n\n")
+		systemPair := []map[string]any{
+			{"role": "user", "content": "[System Instructions]\n" + combined},
+			{"role": "assistant", "content": "Understood. I will follow these instructions."},
+		}
+		upstreamMessages = append(systemPair, upstreamMessages...)
 	}
 
 	body := map[string]any{
@@ -174,10 +186,10 @@ func makeUpstreamRequest(ctx context.Context, client *http.Client, token string,
 			"preview_mode":     true,
 			"enable_thinking":  enableThinking,
 		},
-		"chat_id":                 chatID,
-		"id":                      uuid.New().String(),
-		"current_user_message_id": userMsgID,
+		"chat_id": chatID,
+		"id":      uuid.New().String(),
 	}
+
 	if len(files) > 0 {
 		var filesData []map[string]any
 		for _, f := range files {
@@ -204,13 +216,10 @@ func makeUpstreamRequest(ctx context.Context, client *http.Client, token string,
 			}
 		}
 		body["files"] = filesData
+		body["current_user_message_id"] = userMsgID
 	}
 
 	bodyBytes, _ := json.Marshal(body)
-
-	if len(files) > 0 {
-		log.Printf("[MODEL] image request body: %s", string(bodyBytes))
-	}
 
 	url := fmt.Sprintf(
 		"https://chat.z.ai/api/v2/chat/completions?timestamp=%d&requestId=%s&user_id=%s&version=0.0.1&platform=web&token=%s&current_url=%s&pathname=%s&signature_timestamp=%d",
@@ -281,7 +290,8 @@ func collectNonStream(body io.Reader) (string, error) {
 		if err := json.Unmarshal([]byte(payload), &u); err != nil {
 			continue
 		}
-		if u.Data.Phase == "done" {
+
+		if u.Data.Phase == "done" || u.Data.Done {
 			break
 		}
 		if u.Data.Phase == "thinking" {
@@ -301,12 +311,10 @@ func collectNonStream(body io.Reader) (string, error) {
 		switch u.Data.Phase {
 		case "answer":
 			if u.Data.DeltaContent != "" {
-
 				chunks = append(chunks, u.Data.DeltaContent)
 			} else if ec != "" && strings.Contains(ec, "</details>") {
-
-				if idx := strings.Index(ec, "</details>"); idx != -1 {
-					after := ec[idx+len("</details>"):]
+				if _, after, ok := strings.Cut(ec, "</details>"); ok {
+					after := after
 					after = strings.TrimPrefix(after, "\n")
 					if after != "" {
 						chunks = append(chunks, after)
@@ -315,7 +323,6 @@ func collectNonStream(body io.Reader) (string, error) {
 			}
 		case "other", "tool_call":
 			if ec != "" {
-
 				runes := []rune(ec)
 				if len(runes) > totalOutputLen {
 					newPart := string(runes[totalOutputLen:])

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -362,9 +363,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			envMap = make(map[string]string)
 		}
-		for k, v := range newSettings {
-			envMap[k] = v
-		}
+		maps.Copy(envMap, newSettings)
 
 		if err := godotenv.Write(envMap, ".env"); err != nil {
 			http.Error(w, "Failed to write .env", http.StatusInternalServerError)
