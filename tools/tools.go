@@ -27,7 +27,9 @@ var All = []*ToolDef{
 
 	ReadFile,
 	WriteFile,
+	EditFile,
 	AppendFile,
+	GrepFile,
 	ListDir,
 	CreateDir,
 	DeleteFile,

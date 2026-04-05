@@ -104,11 +104,19 @@ func buildSystemPrompt(reg *ToolRegistry, platform string) string {
 			"- Tool values are passed verbatim. Special characters (quotes, backslashes, regex) work fine inside values.\n\n" +
 
 			"## File Operations\n" +
-			"write_file is robust — it handles all content types: code, HTML, JSON, scripts, binaries encoded as text.\n" +
-			"- Content is written exactly as provided. No escaping needed.\n" +
+			"**Reading**: Use read_file with start_line/end_line for large files — returns line-numbered output.\n" +
+			"**Writing**: write_file auto-creates dirs, backs up existing file to .bak. Content written verbatim.\n" +
 			"- For long content, use the body syntax: <tool_call>write_file path=\"file.py\">\\ncontent here\\n</tool_call>\n" +
-			"- If write_file fails, check the path (directory must exist). Never assume content corruption.\n" +
-			"- Never use workarounds like base64 encoding unless writing actual binary data.\n\n" +
+			"**Editing**: Use edit_file for targeted changes — never rewrite whole files just to change a few lines.\n" +
+			"- replace_text: find exact old_text, replace with new_text (must match exactly, including whitespace)\n" +
+			"- replace_lines start_line=N end_line=M: replace a range of lines with new_content\n" +
+			"- insert_after/insert_before line_number=N: insert new_content relative to a line\n" +
+			"- delete_lines start_line=N end_line=M: remove a range of lines\n" +
+			"- replace_all: replace all occurrences of old_text\n" +
+			"**Searching**: Use grep_file with regex pattern to find text across a file or directory tree.\n" +
+			"- Returns line numbers + context. Use context_lines=2 for surrounding code context.\n" +
+			"**Workflow**: read_file → understand structure → edit_file for changes → grep_file to verify.\n" +
+			"Never split file writes into chunks — write the full content in one write_file call.\n\n" +
 
 			"## Error Handling & Anti-Loop Rules (CRITICAL)\n" +
 			"1. First failure: Read the error carefully. Fix root cause. Retry ONCE with a different approach.\n" +
@@ -230,9 +238,11 @@ func buildSystemPrompt(reg *ToolRegistry, platform string) string {
 			}
 		}
 		sb.WriteString("\n## Standard Tool Call:\n<tool_call>exec cmd=\"echo hello\" /></tool_call>\n")
-		sb.WriteString("## Long Content Tool Call (use for run_python, write_file, append_file):\n" +
+		sb.WriteString("## Long Content Tool Call (use for run_python, write_file, append_file, edit_file new_content):\n" +
 			"<tool_call>write_file path=\"script.py\">\nprint(\"Hello World\")\n" +
-			"print(r\"Regex \\\\d+\")\n</tool_call>\n")
+			"print(r\"Regex \\\\d+\")\n</tool_call>\n" +
+			"<tool_call>edit_file path=\"file.py\" mode=\"replace_text\" old_text=\"old\" new_text=\"new\" />\n" +
+			"<tool_call>edit_file path=\"file.py\" mode=\"insert_after\" line_number=\"5\">\nnew line here\n</tool_call>\n")
 	}
 	return sb.String()
 }
@@ -1140,6 +1150,10 @@ func parseAllToolCalls(text string) []parsedToolCall {
 				kv["code"] = valContent
 			case "write_file", "append_file", "progress":
 				kv["content"] = valContent
+			case "edit_file":
+				if kv["new_content"] == "" {
+					kv["new_content"] = valContent
+				}
 			}
 		}
 

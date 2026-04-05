@@ -42,7 +42,6 @@ type fieldDef struct {
 }
 
 var sharedFields = []fieldDef{
-	{key: "AI_PROVIDER", label: "AI Provider", placeholder: "zai | nvidia | openrouter (default: zai)"},
 	{key: "DEFAULT_MODEL", label: "Default AI Model", placeholder: "GLM-4.7"},
 	{key: "MAX_ITERATIONS", label: "Max Agent Iterations", placeholder: "10", numericOnly: true},
 	{key: "DNS", label: "Custom DNS Server", placeholder: "1.1.1.1 (optional)"},
@@ -82,14 +81,10 @@ var allInterfaces = []interfaceDef{
 	},
 	{
 		id:    "nvidia",
-		label: "NVIDIA NIM (OpenAI-compat)",
+		label: "NVIDIA NIM",
 		emoji: "🟢",
 		fields: []fieldDef{
 			{key: "NVIDIA_API_KEY", label: "NVIDIA API Key", placeholder: "nvapi-...", required: true, secret: true},
-			{key: "NVIDIA_API_URL", label: "NVIDIA API URL", placeholder: "https://integrate.api.nvidia.com/v1/chat/completions"},
-			{key: "NVIDIA_MAX_TOKENS", label: "Max Tokens", placeholder: "16384", numericOnly: true},
-			{key: "NVIDIA_TEMPERATURE", label: "Temperature", placeholder: "0.60"},
-			{key: "NVIDIA_ENABLE_THINKING", label: "Enable Thinking", placeholder: "true"},
 		},
 	},
 	{
@@ -98,7 +93,14 @@ var allInterfaces = []interfaceDef{
 		emoji: "🔀",
 		fields: []fieldDef{
 			{key: "OPENROUTER_API_KEY", label: "OpenRouter API Key", placeholder: "sk-or-...", required: true, secret: true},
-			{key: "OPENROUTER_STREAM", label: "Enable Streaming", placeholder: "true"},
+		},
+	},
+	{
+		id:    "groq",
+		label: "Groq",
+		emoji: "⚡",
+		fields: []fieldDef{
+			{key: "GROQ_API_KEY", label: "Groq API Key", placeholder: "gsk_...", required: true, secret: true},
 		},
 	},
 }

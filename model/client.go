@@ -110,7 +110,7 @@ func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Mes
 }
 
 func (c *Client) sendInternal(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
-	provider := strings.ToLower(strings.TrimSpace(os.Getenv("AI_PROVIDER")))
+	provider := GetActiveProvider()
 	if provider == "" || provider == "zai" || provider == "glm" {
 		return c.sendInternalZAI(ctx, model, messages, files)
 	}
@@ -120,6 +120,8 @@ func (c *Client) sendInternal(ctx context.Context, model string, messages []Mess
 		return c.sendInternalOpenAICompat(ctx, model, messages, files)
 	case "openrouter":
 		return c.sendInternalOpenRouter(ctx, model, messages, files)
+	case "groq":
+		return c.sendInternalGroq(ctx, model, messages, files)
 	default:
 		return Message{}, fmt.Errorf("unsupported AI_PROVIDER: %s", provider)
 	}
@@ -145,44 +147,41 @@ func (c *Client) sendInternalZAI(ctx context.Context, model string, messages []M
 }
 
 func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
-	apiKey := strings.TrimSpace(os.Getenv("NVIDIA_API_KEY"))
-	if apiKey == "" {
+	ps := GetProviderSettings("nvidia")
+	if ps.APIKey == "" {
 		return Message{}, fmt.Errorf("missing NVIDIA_API_KEY")
 	}
 
-	url := strings.TrimSpace(os.Getenv("NVIDIA_API_URL"))
-	if url == "" {
-		url = "https://integrate.api.nvidia.com/v1/chat/completions"
+	apiURL := ps.APIURL
+	if apiURL == "" {
+		apiURL = "https://integrate.api.nvidia.com/v1/chat/completions"
 	}
-
 	if model == "" {
-		model = "qwen/qwq-32b"
+		model = ps.Model
 	}
 
-	stream := envBool("NVIDIA_STREAM", true)
 	imageURLs := collectImageURLs(messages, files)
-
 	body := map[string]any{
 		"model":             model,
 		"messages":          toOpenAIMessages(messages, imageURLs),
-		"temperature":       envFloat("NVIDIA_TEMPERATURE", 0.6),
-		"top_p":             envFloat("NVIDIA_TOP_P", 0.95),
+		"temperature":       ps.Temperature,
+		"top_p":             ps.TopP,
 		"frequency_penalty": 0,
 		"presence_penalty":  0,
-		"max_tokens":        envInt("NVIDIA_MAX_TOKENS", 16384),
-		"stream":            stream,
+		"max_tokens":        ps.MaxTokens,
+		"stream":            ps.Stream,
 		"chat_template_kwargs": map[string]any{
-			"enable_thinking": envBool("NVIDIA_ENABLE_THINKING", true),
+			"enable_thinking": ps.EnableThinking,
 		},
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return Message{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	if stream {
+	req.Header.Set("Authorization", "Bearer "+ps.APIKey)
+	if ps.Stream {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {
 		req.Header.Set("Accept", "application/json")
@@ -201,7 +200,65 @@ func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, mes
 	}
 
 	var content string
-	if stream {
+	if ps.Stream {
+		content, err = collectOpenAIStream(resp.Body)
+	} else {
+		content, err = collectOpenAINonStream(resp.Body)
+	}
+	return Message{Role: "assistant", Content: content}, err
+}
+
+func (c *Client) sendInternalGroq(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
+	ps := GetProviderSettings("groq")
+	if ps.APIKey == "" {
+		return Message{}, fmt.Errorf("missing GROQ_API_KEY")
+	}
+
+	apiURL := ps.APIURL
+	if apiURL == "" {
+		apiURL = "https://api.groq.com/openai/v1/chat/completions"
+	}
+	if model == "" {
+		model = ps.Model
+	}
+
+	imageURLs := collectImageURLs(messages, files)
+	body := map[string]any{
+		"model":                 model,
+		"messages":              toOpenAIMessages(messages, imageURLs),
+		"temperature":           ps.Temperature,
+		"top_p":                 ps.TopP,
+		"max_completion_tokens": ps.MaxTokens,
+		"stream":                ps.Stream,
+		"reasoning_effort":      ps.ReasoningEffort,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return Message{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+ps.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	if ps.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Message{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
+		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+	}
+
+	var content string
+	if ps.Stream {
 		content, err = collectOpenAIStream(resp.Body)
 	} else {
 		content, err = collectOpenAINonStream(resp.Body)
@@ -728,34 +785,32 @@ func extractLatestUserContent(messages []Message) string {
 }
 
 func (c *Client) sendInternalOpenRouter(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
-	apiKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
-	if apiKey == "" {
+	ps := GetProviderSettings("openrouter")
+	if ps.APIKey == "" {
 		return Message{}, fmt.Errorf("missing OPENROUTER_API_KEY")
 	}
 
-	url := "https://openrouter.ai/api/v1/chat/completions"
+	apiURL := "https://openrouter.ai/api/v1/chat/completions"
 	if model == "" {
-		model = "qwen/qwen3.6-plus:free"
+		model = ps.Model
 	}
 
-	stream := envBool("OPENROUTER_STREAM", true)
 	imageURLs := collectImageURLs(messages, files)
-
 	body := map[string]any{
 		"model":     model,
 		"messages":  toOpenAIMessages(messages, imageURLs),
 		"reasoning": map[string]bool{"enabled": true},
-		"stream":    stream,
+		"stream":    ps.Stream,
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return Message{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+ps.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	if stream {
+	if ps.Stream {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {
 		req.Header.Set("Accept", "application/json")
@@ -772,7 +827,7 @@ func (c *Client) sendInternalOpenRouter(ctx context.Context, model string, messa
 		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
 	}
 
-	if stream {
+	if ps.Stream {
 		return collectOpenAIStreamWithReasoning(resp.Body)
 	}
 	return collectOpenAINonStreamWithReasoning(resp.Body)

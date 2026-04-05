@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"apexclaw/model"
+
 	"github.com/amarnathcjd/gogram/telegram"
 	"github.com/joho/godotenv"
 )
@@ -178,6 +180,7 @@ func (b *TelegramBot) Start() error {
 	b.client.OnCommand("rmsudo", b.handleRmSudo)
 	b.client.OnCommand("listsudo", b.handleListSudo)
 	b.client.OnCommand("webcode", b.handleWebCode)
+	b.client.OnCommand("settings", b.handleSettings)
 
 	b.client.On(telegram.OnMessage, func(m *telegram.NewMessage) error {
 		if m.Sender == nil || m.Sender.Bot {
@@ -303,6 +306,12 @@ func (b *TelegramBot) Start() error {
 
 		callbackData := c.DataString()
 		log.Printf("[TG] callback from %s: %q", userID, callbackData)
+
+		// Handle /settings inline UI
+		if strings.HasPrefix(callbackData, "__SET:") {
+			b.handleSettingsCallbackData(c, strings.TrimPrefix(callbackData, "__SET:"))
+			return nil
+		}
 
 		// Handle max-iterations continue/stop buttons
 		if callbackData == "__MAX_ITER_STOP__" {
@@ -1059,6 +1068,175 @@ func handleWebCodeCommand(m *telegram.NewMessage, parts []string) error {
 	default:
 		_, err := m.Reply("Unknown subcommand. Use: /webcode show | set <code> | random")
 		return err
+	}
+}
+
+// ─── /settings command & inline UI ───────────────────────────────────────────
+
+func (b *TelegramBot) handleSettings(m *telegram.NewMessage) error {
+	userID := strconv.FormatInt(m.SenderID(), 10)
+	if !IsSudo(userID) {
+		return nil
+	}
+	text, kb := buildSettingsMenu()
+	_, err := m.Reply(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+	return err
+}
+
+func buildSettingsMenu() (string, *telegram.ReplyInlineMarkup) {
+	provider := model.GetActiveProvider()
+	ps := model.GetProviderSettings(provider)
+	hasKey := ps.APIKey != ""
+
+	keyStatus := "❌ no key"
+	if provider == "zai" {
+		keyStatus = "✅ built-in"
+	} else if hasKey {
+		keyStatus = "✅ set"
+	}
+
+	text := fmt.Sprintf(
+		"⚙️ <b>Settings</b>\n\n"+
+			"Provider: <b>%s</b>\n"+
+			"Model: <b>%s</b>\n"+
+			"API Key: %s\n"+
+			"Max Tokens: <b>%d</b>\n"+
+			"Temperature: <b>%.2f</b>",
+		provider, ps.Model, keyStatus, ps.MaxTokens, ps.Temperature,
+	)
+
+	kb := telegram.NewKeyboard()
+	kb.AddRow(
+		telegram.Button.Data("🔌 Provider", "__SET:provider__"),
+		telegram.Button.Data("🤖 Model", "__SET:model__"),
+	)
+	kb.AddRow(
+		telegram.Button.Data("📊 Max Tokens", "__SET:maxtokens__"),
+		telegram.Button.Data("🌡 Temperature", "__SET:temperature__"),
+	)
+	kb.AddRow(telegram.Button.Data("❌ Close", "__SET:close__"))
+	return text, kb.Build()
+}
+
+func (b *TelegramBot) handleSettingsCallbackData(c *telegram.CallbackQuery, raw string) {
+	// Strip trailing __ (used in button data to make callbacks unique)
+	sub := strings.TrimSuffix(raw, "__")
+	provider := model.GetActiveProvider()
+	c.Answer("")
+
+	switch {
+	case sub == "provider":
+		text := "🔌 <b>Select Provider</b>"
+		kb := telegram.NewKeyboard()
+		var row []telegram.KeyboardButton
+		for i, p := range model.KnownProviders {
+			label := p
+			if p == provider {
+				label = "✅ " + p
+			}
+			row = append(row, telegram.Button.Data(label, "__SET:setprov:"+p))
+			if len(row) == 2 || i == len(model.KnownProviders)-1 {
+				kb.AddRow(row...)
+				row = nil
+			}
+		}
+		kb.AddRow(telegram.Button.Data("« Back", "__SET:back__"))
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb.Build()})
+
+	case sub == "model":
+		models := model.KnownModels[provider]
+		cur := model.GetProviderSettings(provider).Model
+		text := fmt.Sprintf("🤖 <b>Select Model</b>\nProvider: <b>%s</b>", provider)
+		kb := telegram.NewKeyboard()
+		for _, mdl := range models {
+			label := mdl
+			if mdl == cur {
+				label = "✅ " + mdl
+			}
+			kb.AddRow(telegram.Button.Data(label, "__SET:setmodel:"+mdl))
+		}
+		kb.AddRow(telegram.Button.Data("« Back", "__SET:back__"))
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb.Build()})
+
+	case sub == "maxtokens":
+		cur := model.GetProviderSettings(provider).MaxTokens
+		text := fmt.Sprintf("📊 <b>Max Tokens</b> (current: %d)", cur)
+		kb := telegram.NewKeyboard()
+		presets := []int{2048, 4096, 8192, 16384, 32768}
+		var row []telegram.KeyboardButton
+		for i, v := range presets {
+			label := fmt.Sprintf("%d", v)
+			if v == cur {
+				label = "✅ " + label
+			}
+			row = append(row, telegram.Button.Data(label, fmt.Sprintf("__SET:setmaxtok:%d", v)))
+			if len(row) == 3 || i == len(presets)-1 {
+				kb.AddRow(row...)
+				row = nil
+			}
+		}
+		kb.AddRow(telegram.Button.Data("« Back", "__SET:back__"))
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb.Build()})
+
+	case sub == "temperature":
+		cur := model.GetProviderSettings(provider).Temperature
+		text := fmt.Sprintf("🌡 <b>Temperature</b> (current: %.2f)", cur)
+		kb := telegram.NewKeyboard()
+		presets := []float64{0.0, 0.3, 0.5, 0.7, 1.0, 1.2}
+		var row []telegram.KeyboardButton
+		for i, v := range presets {
+			label := fmt.Sprintf("%.1f", v)
+			if v == cur {
+				label = "✅ " + label
+			}
+			row = append(row, telegram.Button.Data(label, fmt.Sprintf("__SET:settemp:%.1f", v)))
+			if len(row) == 3 || i == len(presets)-1 {
+				kb.AddRow(row...)
+				row = nil
+			}
+		}
+		kb.AddRow(telegram.Button.Data("« Back", "__SET:back__"))
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb.Build()})
+
+	case strings.HasPrefix(sub, "setprov:"):
+		newProv := strings.TrimPrefix(sub, "setprov:")
+		model.SetProvider(newProv)
+		text, kb := buildSettingsMenu()
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+
+	case strings.HasPrefix(sub, "setmodel:"):
+		newModel := strings.TrimPrefix(sub, "setmodel:")
+		model.SetProviderModel(provider, newModel)
+		// Also update core config
+		Cfg.DefaultModel = newModel
+		text, kb := buildSettingsMenu()
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+
+	case strings.HasPrefix(sub, "setmaxtok:"):
+		val, _ := strconv.Atoi(strings.TrimPrefix(sub, "setmaxtok:"))
+		if val > 0 {
+			model.UpdateProviderSettings(provider, func(ps *model.ProviderSettings) {
+				ps.MaxTokens = val
+			})
+		}
+		text, kb := buildSettingsMenu()
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+
+	case strings.HasPrefix(sub, "settemp:"):
+		var val float64
+		fmt.Sscanf(strings.TrimPrefix(sub, "settemp:"), "%f", &val)
+		model.UpdateProviderSettings(provider, func(ps *model.ProviderSettings) {
+			ps.Temperature = val
+		})
+		text, kb := buildSettingsMenu()
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+
+	case sub == "back":
+		text, kb := buildSettingsMenu()
+		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+
+	case sub == "close":
+		c.Delete()
 	}
 }
 
