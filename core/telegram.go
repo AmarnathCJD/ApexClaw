@@ -304,6 +304,34 @@ func (b *TelegramBot) Start() error {
 		callbackData := c.DataString()
 		log.Printf("[TG] callback from %s: %q", userID, callbackData)
 
+		// Handle max-iterations continue/stop buttons
+		if callbackData == "__MAX_ITER_STOP__" {
+			c.Edit("🛑 Stopped.", &telegram.SendOptions{ParseMode: telegram.HTML})
+			c.Answer("Stopped.")
+			return nil
+		}
+		if callbackData == "__MAX_ITER_CONTINUE__" {
+			c.Edit("▶️ Continuing...", &telegram.SendOptions{ParseMode: telegram.HTML})
+			c.Answer("Resuming...")
+			session := GetOrCreateAgentSession(userID)
+			onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), userID)
+			result, err := session.RunStream(context.Background(), userID, "Please continue from where you left off and complete the task.", onChunk)
+			if strings.Contains(result, "[MAX_ITERATIONS]") {
+				done()
+				explanation := strings.TrimSpace(strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1))
+				if explanation == "" {
+					explanation = "Hit the iteration limit again."
+				}
+				b.sendMaxIterButtons(c.ChatID, int64(c.MessageID), userID, explanation)
+				return nil
+			}
+			done()
+			if err != nil {
+				c.Answer(fmt.Sprintf("Error: %v", err), &telegram.CallbackOptions{Alert: true})
+			}
+			return nil
+		}
+
 		ctx := map[string]any{
 			"sender_id":       userID,
 			"telegram_id":     c.ChatID,
@@ -384,16 +412,31 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	result = cleanResultForTelegram(result)
 
 	if strings.Contains(result, "[MAX_ITERATIONS]") {
+		done() // clear progress message first
 		explanation := strings.TrimSpace(strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1))
 		if explanation == "" {
-			explanation = "Could not complete the task — hit iteration limit."
+			explanation = "Hit the iteration limit before completing the task."
 		}
-		// Put it into the finalBuf so done() sends it
-		onChunk(explanation)
+		b.sendMaxIterButtons(m.ChatID(), int64(m.ID), userID, explanation)
+		return nil
 	}
 
 	done()
 	return nil
+}
+
+func (b *TelegramBot) sendMaxIterButtons(chatID, replyToMsgID int64, userID, explanation string) {
+	text := explanation + "\n\n<i>Reached the step limit. Would you like to continue?</i>"
+	kb := telegram.NewKeyboard()
+	kb.AddRow(
+		telegram.Button.Data("▶️ Continue", "__MAX_ITER_CONTINUE__").Success(),
+		telegram.Button.Data("🛑 Stop", "__MAX_ITER_STOP__").Danger(),
+	)
+	opts := &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb.Build()}
+	if replyToMsgID > 0 {
+		opts.ReplyID = int32(replyToMsgID)
+	}
+	b.client.SendMessage(chatID, text, opts)
 }
 
 func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {

@@ -20,9 +20,10 @@ import (
 )
 
 type Message struct {
-	Role    string         `json:"role"`
-	Content string         `json:"content"`
-	Files   []UpstreamFile `json:"-"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	ReasoningDetails any            `json:"reasoning_details,omitempty"`
+	Files            []UpstreamFile `json:"-"`
 }
 
 type Client struct {
@@ -56,15 +57,15 @@ const (
 
 var retryableHTTPCodes = map[int]bool{429: true, 500: true, 502: true, 503: true}
 
-func (c *Client) Send(ctx context.Context, model string, messages []Message) (string, error) {
+func (c *Client) Send(ctx context.Context, model string, messages []Message) (Message, error) {
 	return c.sendWithRetry(ctx, model, messages, nil)
 }
 
-func (c *Client) SendWithFiles(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+func (c *Client) SendWithFiles(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	return c.sendWithRetry(ctx, model, messages, files)
 }
 
-func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	var lastErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
@@ -72,7 +73,7 @@ func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Mes
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return Message{}, ctx.Err()
 			}
 			log.Printf("[MODEL] retry attempt %d after %v (last err: %v)", attempt+1, delay, lastErr)
 		}
@@ -96,19 +97,19 @@ func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Mes
 			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return "", err
+			return Message{}, err
 		}
 		if strings.Contains(errStr, "upstream 401") {
 			ClearTokenCache()
 		}
 		if !isRetryable {
-			return "", err
+			return Message{}, err
 		}
 	}
-	return "", fmt.Errorf("all %d retries failed: %w", maxRetries, lastErr)
+	return Message{}, fmt.Errorf("all %d retries failed: %w", maxRetries, lastErr)
 }
 
-func (c *Client) sendInternal(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+func (c *Client) sendInternal(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("AI_PROVIDER")))
 	if provider == "" || provider == "zai" || provider == "glm" {
 		return c.sendInternalZAI(ctx, model, messages, files)
@@ -117,33 +118,36 @@ func (c *Client) sendInternal(ctx context.Context, model string, messages []Mess
 	switch provider {
 	case "nvidia":
 		return c.sendInternalOpenAICompat(ctx, model, messages, files)
+	case "openrouter":
+		return c.sendInternalOpenRouter(ctx, model, messages, files)
 	default:
-		return "", fmt.Errorf("unsupported AI_PROVIDER: %s", provider)
+		return Message{}, fmt.Errorf("unsupported AI_PROVIDER: %s", provider)
 	}
 }
 
-func (c *Client) sendInternalZAI(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+func (c *Client) sendInternalZAI(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	token, err := GetAnonymousToken()
 	if err != nil {
-		return "", fmt.Errorf("auth: %w", err)
+		return Message{}, fmt.Errorf("auth: %w", err)
 	}
 	resp, targetModel, err := makeUpstreamRequest(ctx, c.http, token, messages, model, files)
 	if err != nil {
-		return "", err
+		return Message{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return "", fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
 	}
 	_ = targetModel
-	return collectNonStream(resp.Body)
+	content, err := collectNonStream(resp.Body)
+	return Message{Role: "assistant", Content: content}, err
 }
 
-func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (string, error) {
+func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	apiKey := strings.TrimSpace(os.Getenv("NVIDIA_API_KEY"))
 	if apiKey == "" {
-		return "", fmt.Errorf("missing NVIDIA_API_KEY")
+		return Message{}, fmt.Errorf("missing NVIDIA_API_KEY")
 	}
 
 	url := strings.TrimSpace(os.Getenv("NVIDIA_API_URL"))
@@ -175,7 +179,7 @@ func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, mes
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return Message{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if stream {
@@ -187,19 +191,22 @@ func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, mes
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return Message{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
-		return "", fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
 	}
 
+	var content string
 	if stream {
-		return collectOpenAIStream(resp.Body)
+		content, err = collectOpenAIStream(resp.Body)
+	} else {
+		content, err = collectOpenAINonStream(resp.Body)
 	}
-	return collectOpenAINonStream(resp.Body)
+	return Message{Role: "assistant", Content: content}, err
 }
 
 func toOpenAIMessages(messages []Message, imageURLs []string) []map[string]any {
@@ -233,6 +240,10 @@ func toOpenAIMessages(messages []Message, imageURLs []string) []map[string]any {
 			entry["content"] = parts
 		} else {
 			entry["content"] = m.Content
+		}
+
+		if m.ReasoningDetails != nil {
+			entry["reasoning_details"] = m.ReasoningDetails
 		}
 
 		out = append(out, entry)
@@ -714,4 +725,160 @@ func extractLatestUserContent(messages []Message) string {
 		}
 	}
 	return ""
+}
+
+func (c *Client) sendInternalOpenRouter(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	if apiKey == "" {
+		return Message{}, fmt.Errorf("missing OPENROUTER_API_KEY")
+	}
+
+	url := "https://openrouter.ai/api/v1/chat/completions"
+	if model == "" {
+		model = "qwen/qwen3.6-plus:free"
+	}
+
+	stream := envBool("OPENROUTER_STREAM", true)
+	imageURLs := collectImageURLs(messages, files)
+
+	body := map[string]any{
+		"model":     model,
+		"messages":  toOpenAIMessages(messages, imageURLs),
+		"reasoning": map[string]bool{"enabled": true},
+		"stream":    stream,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return Message{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Message{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
+		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+	}
+
+	if stream {
+		return collectOpenAIStreamWithReasoning(resp.Body)
+	}
+	return collectOpenAINonStreamWithReasoning(resp.Body)
+}
+
+func collectOpenAIStreamWithReasoning(body io.Reader) (Message, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+
+	var chunks []string
+	var reasoningDetails any
+
+	type openAIResponse struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Choices []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningDetails any    `json:"reasoning_details"`
+			} `json:"delta"`
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningDetails any    `json:"reasoning_details"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+
+		var chunk openAIResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+
+		if chunk.Error != nil {
+			msg := chunk.Error.Message
+			if chunk.Error.Code != "" {
+				return Message{}, fmt.Errorf("provider %s: %s", chunk.Error.Code, msg)
+			}
+			return Message{}, fmt.Errorf("provider error: %s", msg)
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		c := chunk.Choices[0].Delta.Content
+		if c == "" {
+			c = chunk.Choices[0].Message.Content
+		}
+		if c != "" {
+			chunks = append(chunks, c)
+		}
+
+		r := chunk.Choices[0].Delta.ReasoningDetails
+		if r == nil {
+			r = chunk.Choices[0].Message.ReasoningDetails
+		}
+		if r != nil {
+			reasoningDetails = r
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return Message{}, err
+	}
+
+	result := strings.TrimSpace(strings.Join(chunks, ""))
+	return Message{Role: "assistant", Content: result, ReasoningDetails: reasoningDetails}, nil
+}
+
+func collectOpenAINonStreamWithReasoning(body io.Reader) (Message, error) {
+	type openAIResponse struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningDetails any    `json:"reasoning_details"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	var resp openAIResponse
+	if err := json.NewDecoder(body).Decode(&resp); err != nil {
+		return Message{}, err
+	}
+	if resp.Error != nil {
+		return Message{}, fmt.Errorf("provider error: %s", resp.Error.Message)
+	}
+	if len(resp.Choices) == 0 {
+		return Message{}, fmt.Errorf("empty response")
+	}
+	msg := resp.Choices[0].Message
+	return Message{Role: "assistant", Content: msg.Content, ReasoningDetails: msg.ReasoningDetails}, nil
 }

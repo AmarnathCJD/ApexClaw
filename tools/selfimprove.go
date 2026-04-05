@@ -156,7 +156,7 @@ Write ONLY the Python code, no markdown fences, no explanations.`, name, descrip
 	if err != nil {
 		return "", err
 	}
-	code := strings.TrimSpace(reply)
+	code := strings.TrimSpace(reply.Content)
 	code = strings.TrimPrefix(code, "```python")
 	code = strings.TrimPrefix(code, "```")
 	code = strings.TrimSuffix(code, "```")

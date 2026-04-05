@@ -318,15 +318,15 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 			return "", fmt.Errorf("model: %w", err)
 		}
 
-		funcName, argsJSON, hasToolCall := parseToolCall(reply)
+		funcName, argsJSON, hasToolCall := parseToolCall(reply.Content)
 		if !hasToolCall {
-			reply = cleanReply(reply)
-			s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
-			return reply, nil
+			content := cleanReply(reply.Content)
+			s.history = append(s.history, model.Message{Role: "assistant", Content: content})
+			return content, nil
 		}
 
 		log.Printf("[AGENT] tool=%s args=%s", funcName, argsJSON)
-		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+		s.history = append(s.history, model.Message{Role: "assistant", Content: reply.Content})
 		result := s.executeTool(funcName, argsJSON, senderID)
 		log.Printf("[AGENT] tool=%s result_len=%d", funcName, len(result))
 		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
@@ -352,8 +352,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 
 	explanation, err := s.client.Send(ctx, s.model, s.history)
 	if err == nil {
-		explanation = cleanReply(explanation)
-		return "[MAX_ITERATIONS]\n" + explanation, nil
+		return "[MAX_ITERATIONS]\n" + cleanReply(explanation.Content), nil
 	}
 
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
@@ -391,10 +390,10 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		copy(history, s.history)
 		s.mu.Unlock()
 
-		var reply string
+		var replyMsg model.Message
 		var err error
 		for attempt := range 3 {
-			reply, err = s.client.Send(ctx, s.model, history)
+			replyMsg, err = s.client.Send(ctx, s.model, history)
 			if err == nil {
 				break
 			}
@@ -415,13 +414,13 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			return "", fmt.Errorf("model: %w", err)
 		}
 
-		reply = repairCutoffResponse(reply)
+		reply := repairCutoffResponse(replyMsg.Content)
 
 		toolCalls := parseAllToolCalls(reply)
 		if len(toolCalls) == 0 {
 			reply = cleanReply(reply)
 			s.mu.Lock()
-			s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+			s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
 			s.trimHistory()
 			s.mu.Unlock()
 			if onChunk != nil {
@@ -443,7 +442,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		}
 
 		s.mu.Lock()
-		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+		s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
 		s.mu.Unlock()
 
 		if hasSequential || len(toolCalls) == 1 {
@@ -573,8 +572,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		go SaveSession(sessionID, s.history)
 	}
 	if err == nil {
-		explanation = cleanReply(explanation)
-		return "[MAX_ITERATIONS]\n" + explanation, nil
+		return "[MAX_ITERATIONS]\n" + cleanReply(explanation.Content), nil
 	}
 
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
@@ -594,13 +592,13 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 	copy(history, s.history)
 	s.mu.Unlock()
 
-	reply, err := s.client.SendWithFiles(ctx, s.model, history, files)
+	replyMsg, err := s.client.SendWithFiles(ctx, s.model, history, files)
 	if err != nil {
 		return "", fmt.Errorf("model: %w", err)
 	}
-	funcName, argsJSON, hasToolCall := parseToolCall(reply)
+	funcName, argsJSON, hasToolCall := parseToolCall(replyMsg.Content)
 	if !hasToolCall {
-		reply = cleanReply(reply)
+		reply := cleanReply(replyMsg.Content)
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 		s.mu.Unlock()
@@ -613,7 +611,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 	var toolErrors []string
 
 	s.mu.Lock()
-	s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+	s.history = append(s.history, model.Message{Role: "assistant", Content: replyMsg.Content})
 	if onChunk != nil {
 		onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", funcName))
 	}
@@ -635,13 +633,13 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		copy(history, s.history)
 		s.mu.Unlock()
 
-		r, err := s.client.Send(ctx, s.model, history)
+		rMsg, err := s.client.Send(ctx, s.model, history)
 		if err != nil {
 			return "", fmt.Errorf("model: %w", err)
 		}
-		fn, aj, hasTool := parseToolCall(r)
+		fn, aj, hasTool := parseToolCall(rMsg.Content)
 		if !hasTool {
-			r = cleanReply(r)
+			r := cleanReply(rMsg.Content)
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{Role: "assistant", Content: r})
 			s.mu.Unlock()
@@ -652,7 +650,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 		}
 		log.Printf("[AGENT-STREAM] tool=%s", fn)
 		s.mu.Lock()
-		s.history = append(s.history, model.Message{Role: "assistant", Content: r})
+		s.history = append(s.history, model.Message{Role: "assistant", Content: rMsg.Content})
 		if onChunk != nil {
 			onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", fn))
 		}
@@ -680,8 +678,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 
 	explanation, err := s.client.Send(ctx, s.model, finalHistory)
 	if err == nil {
-		explanation = cleanReply(explanation)
-		return "[MAX_ITERATIONS]\n" + explanation, nil
+		return "[MAX_ITERATIONS]\n" + cleanReply(explanation.Content), nil
 	}
 
 	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."

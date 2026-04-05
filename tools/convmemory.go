@@ -376,15 +376,15 @@ If nothing worth storing, return []`, catHint, text)
 		return nil, err
 	}
 
-	reply = strings.TrimSpace(reply)
-	reply = strings.TrimPrefix(reply, "```json")
-	reply = strings.TrimPrefix(reply, "```")
-	reply = strings.TrimSuffix(reply, "```")
-	reply = strings.TrimSpace(reply)
+	content := strings.TrimSpace(reply.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
 
 	var facts []*MemoryFact
-	if err := json.Unmarshal([]byte(reply), &facts); err != nil {
-		return nil, fmt.Errorf("parse error: %v (raw: %s)", err, reply[:min(len(reply), 200)])
+	if err := json.Unmarshal([]byte(content), &facts); err != nil {
+		return nil, fmt.Errorf("parse error: %v (raw: %s)", err, content[:min(len(content), 200)])
 	}
 	now := time.Now().Format(time.RFC3339)
 	for _, f := range facts {

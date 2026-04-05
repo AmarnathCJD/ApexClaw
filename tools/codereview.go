@@ -261,5 +261,5 @@ Be specific, actionable, and reference actual code when possible. Don't be gener
 	if err != nil {
 		return fmt.Sprintf("Error: code review failed: %v", err)
 	}
-	return strings.TrimSpace(reply)
+	return strings.TrimSpace(reply.Content)
 }

@@ -145,7 +145,7 @@ Text to Humanize:
 		return fmt.Sprintf("Error: humanization failed: %v", err)
 	}
 
-	return strings.TrimSpace(reply)
+	return strings.TrimSpace(reply.Content)
 }
 
 var FrontendDesign = &ToolDef{
@@ -302,5 +302,5 @@ Remember: You're capable of extraordinary creative work. Don't hold back. Show w
 		return fmt.Sprintf("Error: frontend design failed: %v", err)
 	}
 
-	return strings.TrimSpace(reply)
+	return strings.TrimSpace(reply.Content)
 }
