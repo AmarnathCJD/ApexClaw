@@ -72,7 +72,7 @@ func TGSendPhoto(peer string, pathOrFileID, caption string) string {
 }
 
 // TGSendMessage sends a text message to a Telegram chat
-func TGSendMessage(peer string, text string) string {
+func TGSendMessage(peer string, text string, replyToID string) string {
 	if heartbeatTGClient == nil {
 		return "Error: Telegram client not ready"
 	}
@@ -82,7 +82,15 @@ func TGSendMessage(peer string, text string) string {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
 
-	if _, err := heartbeatTGClient.SendMessage(resolvedPeer, text, &telegram.SendOptions{ParseMode: telegram.HTML}); err != nil {
+	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
+	if replyToID != "" {
+		var msgID int32
+		if _, err := fmt.Sscanf(replyToID, "%d", &msgID); err == nil && msgID > 0 {
+			opts.ReplyID = msgID
+		}
+	}
+
+	if _, err := heartbeatTGClient.SendMessage(resolvedPeer, text, opts); err != nil {
 		return fmt.Sprintf("Error sending message: %v", err)
 	}
 	return ""
