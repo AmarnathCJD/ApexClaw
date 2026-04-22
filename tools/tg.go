@@ -12,7 +12,7 @@ import (
 // === Function Pointers (wired in core/register.go) ===
 
 var SendTGFileFn func(peer string, filePath, caption string, forceDocument bool) string
-var SendTGMsgFn func(peer string, text string) string
+var SendTGMsgFn func(peer string, text string, replyToID string) string
 var SendTGPhotoFn func(peer string, pathOrFileID, caption string) string
 var SendTGPhotoURLFn func(peer string, photoURL, caption string) string
 var SendTGAlbumFn func(peer string, paths []string, caption string) string
@@ -141,6 +141,7 @@ var TGSendMessage = &ToolDef{
 	Args: []ToolArg{
 		{Name: "text", Description: "Message text (HTML formatting allowed)", Required: true},
 		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "reply_to_id", Description: "Optional message ID to reply to (creates a threaded reply)", Required: false},
 	},
 	ExecuteWithContext: func(args map[string]string, userID string) string {
 		text := strings.TrimSpace(args["text"])
@@ -151,10 +152,11 @@ var TGSendMessage = &ToolDef{
 		if target == "" {
 			return "Error: no current chat context"
 		}
+		replyToID := strings.TrimSpace(args["reply_to_id"])
 		if SendTGMsgFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		if r := SendTGMsgFn(target, text); r != "" {
+		if r := SendTGMsgFn(target, text, replyToID); r != "" {
 			return r
 		}
 		return "Sent"

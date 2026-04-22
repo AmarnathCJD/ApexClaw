@@ -568,6 +568,7 @@ var GmailSendMessage = &ToolDef{
 		{Name: "body", Description: "Email body (plain text)", Required: true},
 		{Name: "cc", Description: "Optional CC address(es), comma-separated", Required: false},
 		{Name: "bcc", Description: "Optional BCC address(es), comma-separated", Required: false},
+		{Name: "reply_to_id", Description: "Optional message ID to reply to (creates a threaded conversation)", Required: false},
 	},
 	Execute: func(args map[string]string) string {
 		to := strings.TrimSpace(args["to"])
@@ -575,6 +576,7 @@ var GmailSendMessage = &ToolDef{
 		body := strings.TrimSpace(args["body"])
 		cc := strings.TrimSpace(args["cc"])
 		bcc := strings.TrimSpace(args["bcc"])
+		replyToID := strings.TrimSpace(args["reply_to_id"])
 
 		if to == "" || subject == "" || body == "" {
 			return "Error: to, subject, and body are required"
@@ -595,7 +597,10 @@ var GmailSendMessage = &ToolDef{
 		msgBuilder.WriteString(body)
 
 		encoded := base64.URLEncoding.EncodeToString([]byte(msgBuilder.String()))
-		payload := map[string]string{"raw": encoded}
+		payload := map[string]interface{}{"raw": encoded}
+		if replyToID != "" {
+			payload["threadId"] = replyToID
+		}
 		payloadJSON, _ := json.Marshal(payload)
 
 		respBody, err := gmailAPIRequest("POST", "/users/me/messages/send", strings.NewReader(string(payloadJSON)))

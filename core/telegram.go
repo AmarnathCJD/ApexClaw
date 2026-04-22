@@ -1201,16 +1201,13 @@ func (b *TelegramBot) handleSettingsCallbackData(c *telegram.CallbackQuery, raw 
 	case strings.HasPrefix(sub, "setprov:"):
 		newProv := strings.TrimPrefix(sub, "setprov:")
 		model.SetProvider(newProv)
-		text, kb := buildSettingsMenu()
-		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+		settingsEditMenu(c, sub)
 
 	case strings.HasPrefix(sub, "setmodel:"):
 		newModel := strings.TrimPrefix(sub, "setmodel:")
 		model.SetProviderModel(provider, newModel)
-		// Also update core config
 		Cfg.DefaultModel = newModel
-		text, kb := buildSettingsMenu()
-		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+		settingsEditMenu(c, sub)
 
 	case strings.HasPrefix(sub, "setmaxtok:"):
 		val, _ := strconv.Atoi(strings.TrimPrefix(sub, "setmaxtok:"))
@@ -1219,8 +1216,7 @@ func (b *TelegramBot) handleSettingsCallbackData(c *telegram.CallbackQuery, raw 
 				ps.MaxTokens = val
 			})
 		}
-		text, kb := buildSettingsMenu()
-		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+		settingsEditMenu(c, sub)
 
 	case strings.HasPrefix(sub, "settemp:"):
 		var val float64
@@ -1228,16 +1224,28 @@ func (b *TelegramBot) handleSettingsCallbackData(c *telegram.CallbackQuery, raw 
 		model.UpdateProviderSettings(provider, func(ps *model.ProviderSettings) {
 			ps.Temperature = val
 		})
-		text, kb := buildSettingsMenu()
-		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+		settingsEditMenu(c, sub)
 
 	case sub == "back":
-		text, kb := buildSettingsMenu()
-		c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+		settingsEditMenu(c, sub)
 
 	case sub == "close":
-		c.Delete()
+		if _, err := c.Delete(); err != nil {
+			log.Printf("[SETTINGS] delete error: %v", err)
+		}
 	}
+}
+
+func settingsEdit(c *telegram.CallbackQuery, action, text string, kb *telegram.ReplyInlineMarkup) {
+	_, err := c.Edit(text, &telegram.SendOptions{ParseMode: telegram.HTML, ReplyMarkup: kb})
+	if err != nil {
+		log.Printf("[SETTINGS] edit(%s) error: %v (chatID=%d msgID=%d)", action, err, c.ChatID, c.MessageID)
+	}
+}
+
+func settingsEditMenu(c *telegram.CallbackQuery, action string) {
+	text, kb := buildSettingsMenu()
+	settingsEdit(c, action, text, kb)
 }
 
 func (b *TelegramBot) handleSudoCommands(m *telegram.NewMessage, parts []string) error {

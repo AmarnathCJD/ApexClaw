@@ -109,19 +109,32 @@ func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Mes
 	return Message{}, fmt.Errorf("all %d retries failed: %w", maxRetries, lastErr)
 }
 
-func (c *Client) sendInternal(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
+func (c *Client) sendInternal(ctx context.Context, mdl string, messages []Message, files []*UpstreamFile) (Message, error) {
 	provider := GetActiveProvider()
 	if provider == "" || provider == "zai" || provider == "glm" {
-		return c.sendInternalZAI(ctx, model, messages, files)
+		ps := GetProviderSettings("zai")
+		active := mdl
+		if active == "" {
+			active = ps.Model
+		}
+		log.Printf("[MODEL] provider=zai model=%s msgs=%d", active, len(messages))
+		return c.sendInternalZAI(ctx, mdl, messages, files)
 	}
+
+	ps := GetProviderSettings(provider)
+	active := mdl
+	if active == "" {
+		active = ps.Model
+	}
+	log.Printf("[MODEL] provider=%s model=%s msgs=%d", provider, active, len(messages))
 
 	switch provider {
 	case "nvidia":
-		return c.sendInternalOpenAICompat(ctx, model, messages, files)
+		return c.sendInternalOpenAICompat(ctx, mdl, messages, files)
 	case "openrouter":
-		return c.sendInternalOpenRouter(ctx, model, messages, files)
+		return c.sendInternalOpenRouter(ctx, mdl, messages, files)
 	case "groq":
-		return c.sendInternalGroq(ctx, model, messages, files)
+		return c.sendInternalGroq(ctx, mdl, messages, files)
 	default:
 		return Message{}, fmt.Errorf("unsupported AI_PROVIDER: %s", provider)
 	}
