@@ -159,6 +159,11 @@ func (c *Client) sendInternalZAI(ctx context.Context, model string, messages []M
 	return Message{Role: "assistant", Content: content}, err
 }
 
+func isMistralModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "mistral") || strings.Contains(m, "mixtral") || strings.Contains(m, "codestral") || strings.Contains(m, "ministral") || strings.Contains(m, "devstral") || strings.Contains(m, "magistral")
+}
+
 func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, messages []Message, files []*UpstreamFile) (Message, error) {
 	ps := GetProviderSettings("nvidia")
 	if ps.APIKey == "" {
@@ -183,9 +188,15 @@ func (c *Client) sendInternalOpenAICompat(ctx context.Context, model string, mes
 		"presence_penalty":  0,
 		"max_tokens":        ps.MaxTokens,
 		"stream":            ps.Stream,
-		"chat_template_kwargs": map[string]any{
+	}
+	if isMistralModel(model) {
+		if ps.ReasoningEffort != "" {
+			body["reasoning_effort"] = ps.ReasoningEffort
+		}
+	} else {
+		body["chat_template_kwargs"] = map[string]any{
 			"enable_thinking": ps.EnableThinking,
-		},
+		}
 	}
 	bodyBytes, _ := json.Marshal(body)
 

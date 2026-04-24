@@ -79,6 +79,9 @@ var KnownModels = map[string][]string{
 		"qwen/qwq-32b", "nvidia/llama-3.1-nemotron-ultra-253b-v1",
 		"meta/llama-4-maverick-17b-128e-instruct", "meta/llama-4-scout-17b-16e-instruct",
 		"deepseek-ai/deepseek-r1", "qwen/qwen2.5-72b-instruct",
+		"mistralai/mistral-small-4-119b-2603", "mistralai/mistral-large-2-instruct",
+		"mistralai/mistral-medium-3-instruct", "mistralai/mistral-nemotron",
+		"mistralai/mixtral-8x22b-instruct-v0.1", "mistralai/codestral-22b-v0.1",
 	},
 	"openrouter": {
 		"qwen/qwen3-14b:free", "qwen/qwen3-235b-a22b:free",
