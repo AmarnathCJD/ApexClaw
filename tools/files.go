@@ -74,6 +74,11 @@ var ReadFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		info, err := os.Stat(path)
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)
@@ -152,6 +157,11 @@ var WriteFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		content := sanitizeFileContent(args["content"])
 
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -213,6 +223,11 @@ var EditFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		mode := strings.TrimSpace(args["mode"])
 		if mode == "" {
 			return "Error: mode is required"
@@ -503,6 +518,11 @@ var AppendFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		content := sanitizeFileContent(args["content"])
 
 		// Ensure separator newline if file exists and doesn't end with one
@@ -630,6 +650,11 @@ var CreateDir = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return fmt.Sprintf("Error: %v", err)
 		}
@@ -652,7 +677,11 @@ var DeleteFile = &ToolDef{
 		if path == "" {
 			return "Error: path is required"
 		}
-		var err error
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
 		if args["recursive"] == "true" {
 			err = os.RemoveAll(path)
 		} else {
@@ -681,6 +710,15 @@ var MoveFile = &ToolDef{
 		if src == "" || dst == "" {
 			return "Error: both src and dst are required"
 		}
+		safeSrc, err := SafeFilePath(src)
+		if err != nil {
+			return fmt.Sprintf("Error src: %v", err)
+		}
+		safeDst, err := SafeFilePath(dst)
+		if err != nil {
+			return fmt.Sprintf("Error dst: %v", err)
+		}
+		src, dst = safeSrc, safeDst
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return fmt.Sprintf("Error creating destination dirs: %v", err)
 		}

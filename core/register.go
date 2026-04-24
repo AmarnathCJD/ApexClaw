@@ -60,16 +60,6 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.ResumeTaskFn = ResumeTask
 	tools.ListTasksFn = ListHeartbeatTasks
 
-	tools.GetDebugSession = func(senderID string) tools.DebugSessionInterface {
-		agentSessions.RLock()
-		session, ok := agentSessions.m[senderID]
-		agentSessions.RUnlock()
-		if ok {
-			return session
-		}
-		return nil
-	}
-
 	for _, t := range tools.All {
 		reg.Register(&ToolDef{
 			Name:               t.Name,

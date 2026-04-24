@@ -132,7 +132,15 @@ func (b *WhatsAppBot) eventHandler(evt interface{}) {
 				return
 			}
 			log.Printf("[WA] msg from %s (group=%v): %q", userID, isGroup, truncate(text, 80))
-			b.handleText(v.Info.Chat, userID, text, isGroup)
+			chat := v.Info.Chat
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[WA] handleText panic recovered: %v", r)
+					}
+				}()
+				b.handleText(chat, userID, text, isGroup)
+			}()
 			return
 		}
 
@@ -142,7 +150,15 @@ func (b *WhatsAppBot) eventHandler(evt interface{}) {
 			if isGroup && !b.isBotReplied(v) {
 				return
 			}
-			b.handleIncomingMedia(v)
+			msg := v
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[WA] handleIncomingMedia panic recovered: %v", r)
+					}
+				}()
+				b.handleIncomingMedia(msg)
+			}()
 		}
 	}
 }

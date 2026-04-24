@@ -324,7 +324,9 @@ func (b *TelegramBot) Start() error {
 			c.Answer("Resuming...")
 			session := GetOrCreateAgentSession(userID)
 			onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), userID)
-			result, err := session.RunStream(context.Background(), userID, "Please continue from where you left off and complete the task.", onChunk)
+			cbCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+			defer cancel()
+			result, err := session.RunStream(cbCtx, userID, "Please continue from where you left off and complete the task.", onChunk)
 			if strings.Contains(result, "[MAX_ITERATIONS]") {
 				done()
 				explanation := strings.TrimSpace(strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1))
@@ -362,7 +364,9 @@ func (b *TelegramBot) Start() error {
 
 		session := GetOrCreateAgentSession(userID)
 		onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), userID)
-		_, err := session.RunStream(context.Background(), userID, cbMsg, onChunk)
+		cbCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		defer cancel()
+		_, err := session.RunStream(cbCtx, userID, cbMsg, onChunk)
 		done()
 
 		if err != nil {

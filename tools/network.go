@@ -309,6 +309,9 @@ var HTTPRequest = &ToolDef{
 		if rawURL == "" {
 			return "Error: url is required"
 		}
+		if err := ValidateExternalURL(rawURL); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
 		method := strings.ToUpper(strings.TrimSpace(args["method"]))
 		if method == "" {
 			method = "GET"

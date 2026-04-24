@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+var authHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 var (
 	cachedToken    string
@@ -28,7 +31,13 @@ func GetAnonymousToken() (string, error) {
 	if cachedToken != "" && time.Now().Add(60*time.Second).Before(cachedTokenExp) {
 		return cachedToken, nil
 	}
-	resp, err := http.Get("https://chat.z.ai/api/v1/auths/")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://chat.z.ai/api/v1/auths/", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := authHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

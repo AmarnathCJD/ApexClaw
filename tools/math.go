@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"math"
-	"math/rand"
 	"strconv"
 	"strings"
 )
@@ -27,30 +26,6 @@ var Calculate = &ToolDef{
 			return fmt.Sprintf("%g", result)
 		}
 		return strconv.FormatFloat(result, 'f', 10, 64)
-	},
-}
-
-var Random = &ToolDef{
-	Name:        "random",
-	Description: "Generate a random integer between min and max (inclusive)",
-	Args: []ToolArg{
-		{Name: "min", Description: "Minimum value (default 1)", Required: false},
-		{Name: "max", Description: "Maximum value (default 100)", Required: false},
-	},
-	Execute: func(args map[string]string) string {
-		min := 1
-		max := 100
-		if v := args["min"]; v != "" {
-			fmt.Sscanf(v, "%d", &min)
-		}
-		if v := args["max"]; v != "" {
-			fmt.Sscanf(v, "%d", &max)
-		}
-		if min > max {
-			min, max = max, min
-		}
-		n := rand.Intn(max-min+1) + min
-		return fmt.Sprintf("%d", n)
 	},
 }
 

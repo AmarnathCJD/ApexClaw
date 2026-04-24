@@ -318,6 +318,12 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 
 	var toolErrors []string
+	var ctxCancels []context.CancelFunc
+	defer func() {
+		for _, c := range ctxCancels {
+			c()
+		}
+	}()
 
 	for i := range s.maxIterations() {
 		reply, err := s.client.Send(ctx, s.model, s.history)
@@ -332,6 +338,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 		if !hasToolCall {
 			content := cleanReply(reply.Content)
 			s.history = append(s.history, model.Message{Role: "assistant", Content: content})
+			s.trimHistory()
 			return content, nil
 		}
 
@@ -350,7 +357,7 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 			if ctx.Err() != nil {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
-				defer cancel()
+				ctxCancels = append(ctxCancels, cancel)
 			}
 		}
 	}
@@ -393,6 +400,14 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	// lastFailKey tracks (tool+args) that errored last iteration to detect exact retry loops.
 	lastFailKey := ""
 	sameFailCount := 0
+	// Track recent tool calls to detect runaway loops (e.g. weak models spamming tg_send_message).
+	recentCalls := make([]string, 0, 6)
+	var ctxCancels []context.CancelFunc
+	defer func() {
+		for _, c := range ctxCancels {
+			c()
+		}
+	}()
 
 	for i := range s.maxIterations() {
 		s.mu.Lock()
@@ -432,13 +447,18 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
 			s.trimHistory()
+			var snapshot []model.Message
+			if strings.HasPrefix(senderID, "web_") {
+				snapshot = make([]model.Message, len(s.history))
+				copy(snapshot, s.history)
+			}
 			s.mu.Unlock()
 			if onChunk != nil {
 				onChunk(reply)
 			}
-			sessionID := strings.TrimPrefix(senderID, "web_")
 			if strings.HasPrefix(senderID, "web_") {
-				go SaveSession(sessionID, s.history)
+				sessionID := strings.TrimPrefix(senderID, "web_")
+				go SaveSession(sessionID, snapshot)
 			}
 			return reply, nil
 		}
@@ -457,9 +477,11 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 
 		if hasSequential || len(toolCalls) == 1 {
 			for _, tc := range toolCalls {
-				if !strings.HasPrefix(tc.funcName, "tg_") {
-					log.Printf("[AGENT-STREAM] tool=%s", tc.funcName)
+				argPreview := tc.argsJSON
+				if len(argPreview) > 200 {
+					argPreview = argPreview[:200] + "..."
 				}
+				log.Printf("[AGENT-STREAM] tool=%s args=%s", tc.funcName, argPreview)
 				label := toolLabel(tc.funcName, tc.argsJSON)
 				isTGTool := strings.HasPrefix(tc.funcName, "tg_")
 				autoProgress(senderID, tc.funcName, tc.argsJSON, "running")
@@ -519,7 +541,33 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 					if ctx.Err() != nil {
 						var cancel context.CancelFunc
 						ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
-						defer cancel()
+						ctxCancels = append(ctxCancels, cancel)
+					}
+				}
+
+				recentCalls = append(recentCalls, tc.funcName)
+				if len(recentCalls) > 5 {
+					recentCalls = recentCalls[len(recentCalls)-5:]
+				}
+				if len(recentCalls) >= 4 {
+					first := recentCalls[len(recentCalls)-4]
+					same := true
+					for _, n := range recentCalls[len(recentCalls)-4:] {
+						if n != first {
+							same = false
+							break
+						}
+					}
+					if same {
+						log.Printf("[AGENT-STREAM] loop-breaker: %s called %d times in a row — forcing stop", first, len(recentCalls))
+						stopMsg := fmt.Sprintf(
+							"[LOOP BREAKER]\nYou called '%s' %d times in a row. Stop calling tools. In your next reply, respond to the user with plain text describing what you did or what went wrong. Do NOT emit any <tool_call> tags.",
+							first, len(recentCalls),
+						)
+						s.mu.Lock()
+						s.history = append(s.history, model.Message{Role: "user", Content: stopMsg})
+						s.mu.Unlock()
+						recentCalls = recentCalls[:0]
 					}
 				}
 			}
@@ -577,9 +625,13 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	s.mu.Unlock()
 
 	explanation, err := s.client.Send(ctx, s.model, history)
-	sessionID := strings.TrimPrefix(senderID, "web_")
 	if strings.HasPrefix(senderID, "web_") {
-		go SaveSession(sessionID, s.history)
+		sessionID := strings.TrimPrefix(senderID, "web_")
+		s.mu.Lock()
+		snapshot := make([]model.Message, len(s.history))
+		copy(snapshot, s.history)
+		s.mu.Unlock()
+		go SaveSession(sessionID, snapshot)
 	}
 	if err == nil {
 		return "[MAX_ITERATIONS]\n" + cleanReply(explanation.Content), nil
@@ -652,6 +704,7 @@ func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userTex
 			r := cleanReply(rMsg.Content)
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{Role: "assistant", Content: r})
+			s.trimHistory()
 			s.mu.Unlock()
 			if onChunk != nil {
 				onChunk(r)

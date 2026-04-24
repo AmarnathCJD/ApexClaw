@@ -163,16 +163,45 @@ func CancelTask(labelOrID string) bool {
 	return false
 }
 
+var heartbeatStop chan struct{}
+
 func StartHeartbeat(client *telegram.Client) {
 	heartbeatTGClient = client
 	loadHeartbeatTasks()
+	heartbeatStop = make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[HEARTBEAT] panic recovered: %v — restarting loop", r)
+				go StartHeartbeat(client)
+			}
+		}()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
 		for {
-			time.Sleep(15 * time.Second)
-			runHeartbeatTick()
+			select {
+			case <-heartbeatStop:
+				return
+			case <-ticker.C:
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[HEARTBEAT] tick panic recovered: %v", r)
+						}
+					}()
+					runHeartbeatTick()
+				}()
+			}
 		}
 	}()
 	log.Printf("[HEARTBEAT] scheduler started (%d tasks loaded)", len(hbStore.tasks))
+}
+
+func StopHeartbeat() {
+	if heartbeatStop != nil {
+		close(heartbeatStop)
+		heartbeatStop = nil
+	}
 }
 
 func runHeartbeatTick() {

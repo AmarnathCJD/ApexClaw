@@ -1,5 +1,10 @@
 package tools
 
+import (
+	"os"
+	"strings"
+)
+
 type ToolDef struct {
 	Name               string
 	Description        string
@@ -17,30 +22,26 @@ type ToolArg struct {
 	Required    bool
 }
 
-var All = []*ToolDef{
-	Exec,
-	ExecChain,
-	RunPython,
+var All []*ToolDef
 
-	DeepWork,
-	DebugTrace,
+func init() {
+	base := []*ToolDef{
+		Exec,
+		ExecChain,
+		RunPython,
 
-	ReadFile,
-	WriteFile,
-	EditFile,
-	AppendFile,
-	GrepFile,
-	ListDir,
-	CreateDir,
-	DeleteFile,
-	MoveFile,
-	SearchFiles,
+		DeepWork,
 
-	SaveFact,
-	RecallFact,
-	ListFacts,
-	DeleteFact,
-	UpdateNote,
+		ReadFile,
+		WriteFile,
+		EditFile,
+		AppendFile,
+		GrepFile,
+		ListDir,
+		CreateDir,
+		DeleteFile,
+		MoveFile,
+		SearchFiles,
 
 	KBAdd,
 	KBSearch,
@@ -96,11 +97,8 @@ var All = []*ToolDef{
 	NavSunshade,
 
 	Datetime,
-	Timer,
-	Echo,
 
 	Calculate,
-	Random,
 
 	Weather,
 	IPLookup,
@@ -157,7 +155,6 @@ var All = []*ToolDef{
 
 	StockPrice,
 
-	Pomodoro,
 	DailyDigest,
 	CronStatus,
 
@@ -168,25 +165,16 @@ var All = []*ToolDef{
 	TimezoneConvert,
 	Translate,
 	Humanize,
-	FrontendDesign,
 
 	MCPCall,
 	MCPList,
 	MCPAuth,
 	MCPConfig,
 
-	ColorInfo,
-
 	NewsHeadlines,
 	RedditFeed,
 	RedditThread,
 	YouTubeSearch,
-	ReadEmail,
-	SendEmail,
-	GmailListMessages,
-	GmailGetMessage,
-	GmailSendMessage,
-	GmailModifyLabels,
 	CalendarListEvents,
 	CalendarCreateEvent,
 	CalendarDeleteEvent,
@@ -248,4 +236,12 @@ var All = []*ToolDef{
 	MemoryRecall,
 	MemoryForget,
 	MemoryStats,
+	}
+
+	All = base
+	if strings.TrimSpace(os.Getenv("MATON_API_KEY")) != "" {
+		All = append(All, GmailListMessages, GmailGetMessage, GmailSendMessage, GmailModifyLabels)
+	} else {
+		All = append(All, ReadEmail, SendEmail)
+	}
 }

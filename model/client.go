@@ -30,24 +30,28 @@ type Client struct {
 	http *http.Client
 }
 
+func baseTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxIdleConnsPerHost = 10
+	t.IdleConnTimeout = 90 * time.Second
+	t.TLSHandshakeTimeout = 10 * time.Second
+	t.ExpectContinueTimeout = 1 * time.Second
+	return t
+}
+
 func New() *Client {
-	transport := &http.Transport{
-		Dial: func(network, addr string) (net.Conn, error) {
-			return net.Dial(network, addr)
-		},
-	}
-	return &Client{http: &http.Client{Timeout: 5 * time.Minute, Transport: transport}}
+	return &Client{http: &http.Client{Timeout: 5 * time.Minute, Transport: baseTransport()}}
 }
 
 func NewWithCustomDialer(dialer *net.Dialer) *Client {
-	transport := &http.Transport{
-		Dial: func(network, addr string) (net.Conn, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			return dialer.DialContext(ctx, network, addr)
-		},
+	t := baseTransport()
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return dialer.DialContext(dialCtx, network, addr)
 	}
-	return &Client{http: &http.Client{Timeout: 5 * time.Minute, Transport: transport}}
+	return &Client{http: &http.Client{Timeout: 5 * time.Minute, Transport: t}}
 }
 
 const (

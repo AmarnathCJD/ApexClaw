@@ -26,6 +26,9 @@ var WebFetch = &ToolDef{
 		if _, err := url.ParseRequestURI(rawURL); err != nil {
 			return fmt.Sprintf("Error: invalid URL: %v", err)
 		}
+		if err := ValidateExternalURL(rawURL); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
 		client := &http.Client{Timeout: 20 * time.Second}
 		req, err := http.NewRequest("GET", rawURL, nil)
 		if err != nil {

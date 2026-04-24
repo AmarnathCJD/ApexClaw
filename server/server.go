@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -32,6 +33,12 @@ type ChatRequest struct {
 	Message string `json:"message"`
 	UserID  string `json:"user_id"`
 }
+
+type ctxKey int
+
+const (
+	ctxKeyJWTClaims ctxKey = iota
+)
 
 type sseNotifyClient struct {
 	ch chan string
@@ -81,9 +88,38 @@ func Start(addr string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
+// sameOrigin enforces an Origin/Referer same-origin check on state-changing
+// requests. Returns true when the request is safe to process.
+func sameOrigin(r *http.Request) bool {
+	host := strings.ToLower(r.Host)
+	check := func(raw string) bool {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return false
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		return strings.EqualFold(u.Host, host)
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		return check(o)
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		return check(ref)
+	}
+	// Neither Origin nor Referer set — be strict on non-login state changes.
+	return false
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 
@@ -93,8 +129,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the code
-	if req.Code != core.Cfg.WebLoginCode {
+	// Validate the code using constant-time compare to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(req.Code), []byte(core.Cfg.WebLoginCode)) != 1 {
 		http.Error(w, "Invalid login code", http.StatusUnauthorized)
 		return
 	}
@@ -121,7 +157,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  time.Now().Add(refreshTokenExpiry),
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -136,6 +173,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 func handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 
@@ -173,6 +214,10 @@ func handleRefresh(w http.ResponseWriter, r *http.Request) {
 func handleChangeCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 
@@ -252,7 +297,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Store claims in context for downstream handlers
-		ctx := context.WithValue(r.Context(), "jwt_claims", claims)
+		ctx := context.WithValue(r.Context(), ctxKeyJWTClaims, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
@@ -264,6 +309,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -271,7 +320,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, _ := r.Context().Value("jwt_claims").(*model.JWTClaims)
+	claims, _ := r.Context().Value(ctxKeyJWTClaims).(*model.JWTClaims)
 	req.UserID = "web_" + claims.SessionID
 
 	if req.Message == "" {
@@ -341,6 +390,36 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 }
 
+// settingsWritableKeys restricts the keys that the web UI is allowed to
+// persist back to .env. Anything not in this set is silently ignored to
+// prevent an authenticated user from rotating secrets (JWT secret, login
+// code, bot tokens) or changing the active provider via the settings POST.
+var settingsWritableKeys = map[string]bool{
+	"AI_PROVIDER":       true,
+	"TELEGRAM_SUDO":     true,
+	"WEB_LOGIN_CODE":    true,
+	"DEEP_WORK_DEFAULT": true,
+	"MAX_ITERATIONS":    true,
+	"LOG_LEVEL":         true,
+	"DNS":               true,
+}
+
+// settingsReadableKeys controls which keys the GET side will return so we
+// don't leak secrets to the UI that happens to have access.
+var settingsReadableSecretKeys = map[string]bool{
+	"WEB_JWT_SECRET":         true,
+	"TELEGRAM_API_ID":        true,
+	"TELEGRAM_API_HASH":      true,
+	"TELEGRAM_BOT_TOKEN":     true,
+	"NVIDIA_API_KEY":         true,
+	"OPENROUTER_API_KEY":     true,
+	"GROQ_API_KEY":           true,
+	"MATON_API_KEY":          true,
+	"TAVILY_API_KEY":         true,
+	"GITHUB_TOKEN":           true,
+	"GOOGLE_STT_API_KEY":     true,
+}
+
 func handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		envMap, err := godotenv.Read()
@@ -348,11 +427,28 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Could not read .env file", http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(envMap)
+		// Redact secret values before returning to the UI.
+		safe := make(map[string]string, len(envMap))
+		for k, v := range envMap {
+			if settingsReadableSecretKeys[k] {
+				if v != "" {
+					safe[k] = "***SET***"
+				} else {
+					safe[k] = ""
+				}
+				continue
+			}
+			safe[k] = v
+		}
+		json.NewEncoder(w).Encode(safe)
 		return
 	}
 
 	if r.Method == http.MethodPost {
+		if !sameOrigin(r) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
 		var newSettings map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&newSettings); err != nil {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -363,13 +459,20 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			envMap = make(map[string]string)
 		}
-		maps.Copy(envMap, newSettings)
+		accepted := make(map[string]string)
+		for k, v := range newSettings {
+			if !settingsWritableKeys[k] {
+				continue
+			}
+			envMap[k] = v
+			accepted[k] = v
+		}
 
 		if err := godotenv.Write(envMap, ".env"); err != nil {
 			http.Error(w, "Failed to write .env", http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		json.NewEncoder(w).Encode(map[string]any{"success": true, "updated": accepted})
 		return
 	}
 
@@ -382,7 +485,7 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, _ := r.Context().Value("jwt_claims").(*model.JWTClaims)
+	claims, _ := r.Context().Value(ctxKeyJWTClaims).(*model.JWTClaims)
 	sessionID := claims.SessionID
 	if sessionID == "" {
 		http.Error(w, "Invalid session", http.StatusBadRequest)
