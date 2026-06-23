@@ -80,6 +80,38 @@ func RegisterBuiltinTools(reg *ToolRegistry) {
 	tools.WAGetContactsFn = WABotGetContacts
 	tools.WAGetGroupsFn = WABotGetGroups
 	tools.WAOwnerIDFn = func() string { return Cfg.WAOwnerID }
+
+	tools.ScheduleTaskFn = func(label, prompt, runAt, repeat, cronExpr, ownerID, onFailure, tags string, maxRuns int, telegramID, messageID, groupID int64) error {
+		return ScheduleTask(ScheduledTask{
+			Label:      label,
+			Prompt:     prompt,
+			RunAt:      runAt,
+			Repeat:     repeat,
+			CronExpr:   cronExpr,
+			OwnerID:    ownerID,
+			OnFailure:  onFailure,
+			Tags:       tags,
+			MaxRuns:    maxRuns,
+			TelegramID: telegramID,
+			MessageID:  messageID,
+			GroupID:    groupID,
+		})
+	}
+	tools.CancelTaskFn = CancelTask
+	tools.CancelTasksByTagFn = CancelTasksByTag
+	tools.PauseTaskFn = PauseTask
+	tools.ResumeTaskFn = ResumeTask
+	tools.ListTasksFn = ListHeartbeatTasks
+	tools.ListTasksByTagFn = ListHeartbeatTasksFiltered
+	tools.DryRunScheduleFn = func(label, prompt, runAt, repeat, cronExpr string, count int) (string, error) {
+		return DryRunSchedule(ScheduledTask{
+			Label:    label,
+			Prompt:   prompt,
+			RunAt:    runAt,
+			Repeat:   repeat,
+			CronExpr: cronExpr,
+		}, count)
+	}
 }
 
 // autoProgress is intentionally a no-op.

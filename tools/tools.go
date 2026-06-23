@@ -119,6 +119,13 @@ func init() {
 		HackerNewsTop,
 		DNSLookup,
 
+		ScheduleTaskTool,
+		ListTasksTool,
+		CancelTaskTool,
+		CancelTasksByTagTool,
+		PauseTaskTool,
+		ResumeTaskTool,
+
 		// Time
 		Datetime,
 
