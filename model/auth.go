@@ -1,66 +1,13 @@
 package model
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
-
-var authHTTPClient = &http.Client{Timeout: 15 * time.Second}
-
-var (
-	cachedToken    string
-	cachedTokenExp time.Time
-	tokenMu        sync.Mutex
-)
-
-func GetAnonymousToken() (string, error) {
-	if t := os.Getenv("ZAI_TOKEN"); t != "" {
-		return t, nil
-	}
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-	if cachedToken != "" && time.Now().Add(60*time.Second).Before(cachedTokenExp) {
-		return cachedToken, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://chat.z.ai/api/v1/auths/", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := authHTTPClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("auth status %d", resp.StatusCode)
-	}
-	var out struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	cachedToken = out.Token
-	cachedTokenExp = time.Now().Add(24 * time.Hour)
-	return cachedToken, nil
-}
-
-func ClearTokenCache() {
-	tokenMu.Lock()
-	cachedToken = ""
-	tokenMu.Unlock()
-}
 
 type TokenPair struct {
 	AccessToken  string `json:"accessToken"`

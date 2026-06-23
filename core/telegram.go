@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -61,60 +62,117 @@ func getTelegramContext(userID string) map[string]any {
 	return nil
 }
 
+// formatTGContext returns a structured "[TG Context: ...]" line prepended to
+// every user message that hits the agent. It surfaces everything the model
+// might need to act without extra tool calls — chat id, msg id, group id,
+// FULL replied-message text, replied sender display name, replied media kind,
+// downloaded file path, and (for images) whether the image was already
+// auto-attached to the ZAI session for vision.
 func formatTGContext(ctx map[string]any) string {
 	if len(ctx) == 0 {
 		return ""
 	}
-	var sb strings.Builder
+
 	header := "TG Context"
 	if v, ok := ctx["platform"]; ok && v == "whatsapp" {
 		header = "WA Context"
 	}
-	sb.WriteString("[" + header + ":")
+
+	var sb strings.Builder
+	sb.WriteString("[" + header + "]\n")
+
+	emit := func(k string, v any) {
+		fmt.Fprintf(&sb, "- %s: %v\n", k, v)
+	}
+	emitQ := func(k string, v any) {
+		// Quoted form for free-form text values (with newline-flattening)
+		s := fmt.Sprintf("%v", v)
+		s = strings.ReplaceAll(s, "\n", " ⏎ ")
+		if len(s) > 300 {
+			s = s[:300] + "…"
+		}
+		fmt.Fprintf(&sb, "- %s: %q\n", k, s)
+	}
+
 	if v, ok := ctx["sender_id"]; ok {
-		fmt.Fprintf(&sb, " sender_id=%v", v)
+		emit("sender_id", v)
+	}
+	if v, ok := ctx["sender_name"]; ok {
+		emit("sender_name", v)
+	}
+	if v, ok := ctx["sender_username"]; ok {
+		emit("sender_username", "@"+fmt.Sprintf("%v", v))
 	}
 	if v, ok := ctx["telegram_id"]; ok {
-		fmt.Fprintf(&sb, " | chat_id=%v", v)
-	}
-	if v, ok := ctx["msg_id"]; ok {
-		fmt.Fprintf(&sb, " | msg_id=%v", v)
+		emit("chat_id", v)
 	}
 	if v, ok := ctx["group_id"]; ok {
-		fmt.Fprintf(&sb, " | group_id=%v", v)
+		emit("group_id", v)
 	}
-	if v, ok := ctx["reply_id"]; ok {
-		fmt.Fprintf(&sb, " | reply_id=%v", v)
+	if v, ok := ctx["chat_type"]; ok {
+		emit("chat_type", v)
 	}
-	if v, ok := ctx["reply_sender_id"]; ok {
-		fmt.Fprintf(&sb, " | reply_sender_id=%v", v)
-	}
-	if v, ok := ctx["reply_text"]; ok && v != "" {
-		text := fmt.Sprintf("%v", v)
-		if len(text) > 100 {
-			text = text[:100] + "..."
-		}
-		fmt.Fprintf(&sb, " | reply_text=%q", text)
-	}
-	if v, ok := ctx["reply_has_file"]; ok && v == true {
-		sb.WriteString(" | reply_has_file=true")
-		if fn, ok2 := ctx["reply_filename"]; ok2 {
-			fmt.Fprintf(&sb, " | reply_filename=%v", fn)
-		}
-	}
-	if v, ok := ctx["file_name"]; ok {
-		fmt.Fprintf(&sb, " | file_name=%v", v)
-	}
-	if v, ok := ctx["file_path"]; ok {
-		fmt.Fprintf(&sb, " | file_path=%v", v)
+	if v, ok := ctx["msg_id"]; ok {
+		emit("msg_id", v)
 	}
 	if v, ok := ctx["callback_data"]; ok {
-		fmt.Fprintf(&sb, " | callback_data=%v", v)
+		emit("callback_data", v)
 	}
-	sb.WriteString("]")
-	return sb.String()
+
+	// Inbound file (user attached a file to THIS message)
+	if v, ok := ctx["file_name"]; ok {
+		emit("file_name", v)
+	}
+	if v, ok := ctx["file_path"]; ok {
+		emit("file_path", v)
+	}
+
+	// Replied-to message context (the meat — what makes "edit this", "what's
+	// in this", "summarise that link", etc. work without tool round-trips).
+	if v, ok := ctx["reply_id"]; ok {
+		emit("reply_id", v)
+	}
+	if v, ok := ctx["reply_sender_name"]; ok {
+		emit("reply_sender_name", v)
+	}
+	if v, ok := ctx["reply_sender_username"]; ok {
+		emit("reply_sender_username", "@"+fmt.Sprintf("%v", v))
+	}
+	if v, ok := ctx["reply_sender_id"]; ok {
+		emit("reply_sender_id", v)
+	}
+	if v, ok := ctx["reply_sender_is_bot"]; ok && v == true {
+		emit("reply_sender_is_bot", true)
+	}
+	if v, ok := ctx["reply_text"]; ok && v != "" {
+		emitQ("reply_text", v)
+	}
+	if v, ok := ctx["reply_media_type"]; ok {
+		emit("reply_media_type", v)
+	}
+	if v, ok := ctx["reply_filename"]; ok {
+		emit("reply_filename", v)
+	}
+	if v, ok := ctx["reply_file_path"]; ok {
+		emit("reply_file_path", v)
+	}
+	if v, ok := ctx["reply_image_attached"]; ok && v == true {
+		emit("reply_image_attached", "true (image is already loaded into your vision context — you can describe/edit it directly without uploading again)")
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
 }
 
+// buildMsgContext returns a rich, AI-friendly context map describing the
+// incoming Telegram message. When the message is a REPLY, we eagerly resolve:
+//   - the replied-to message's full text content
+//   - the replied-to sender's display name/username
+//   - any media on the replied-to message (downloaded to a temp file)
+//   - for images, the file is automatically uploaded to ZAI so the model can
+//     see/edit it on its next chat turn (auto-attached via session.AttachZAIFile)
+//
+// This means the model never needs to call extra tools like tg_get_message
+// or tg_download just to act on what the user replied to.
 func buildMsgContext(m *telegram.NewMessage, userID string, extras map[string]any) map[string]any {
 	ctx := map[string]any{
 		"sender_id":       userID,
@@ -127,21 +185,71 @@ func buildMsgContext(m *telegram.NewMessage, userID string, extras map[string]an
 		ctx["chat_type"] = "group/channel"
 		ctx["group_id"] = m.ChatID()
 	}
+	if me := m.Sender; me != nil {
+		if me.Username != "" {
+			ctx["sender_username"] = me.Username
+		}
+		nm := strings.TrimSpace(me.FirstName + " " + me.LastName)
+		if nm != "" {
+			ctx["sender_name"] = nm
+		}
+	}
+
 	if m.IsReply() {
 		ctx["reply_id"] = int64(m.ReplyToMsgID())
-		if r, err := m.GetReplyMessage(); err == nil {
+		if r, err := m.GetReplyMessage(); err == nil && r != nil {
 			ctx["reply_sender_id"] = fmt.Sprintf("%d", r.SenderID())
+			if rs := r.Sender; rs != nil {
+				if rs.Username != "" {
+					ctx["reply_sender_username"] = rs.Username
+				}
+				nm := strings.TrimSpace(rs.FirstName + " " + rs.LastName)
+				if nm != "" {
+					ctx["reply_sender_name"] = nm
+				}
+				ctx["reply_sender_is_bot"] = rs.Bot
+			}
+
+			if txt := strings.TrimSpace(r.Text()); txt != "" {
+				ctx["reply_text"] = txt
+				ctx["reply_has_text"] = true
+			}
+
 			if r.IsMedia() {
 				ctx["reply_has_file"] = true
 				ctx["replied_id"] = int64(r.ID)
 				if r.File != nil && r.File.Name != "" {
 					ctx["reply_filename"] = r.File.Name
 				}
+				ctx["reply_media_type"] = mediaKind(r)
 			}
 		}
 	}
+
 	maps.Copy(ctx, extras)
 	return ctx
+}
+
+// mediaKind returns a short label for the media type on a message, used to
+// teach the model what kind of attachment the user replied to.
+func mediaKind(m *telegram.NewMessage) string {
+	switch {
+	case m.Photo() != nil:
+		return "photo"
+	case m.Video() != nil:
+		return "video"
+	case m.Voice() != nil:
+		return "voice"
+	case m.Audio() != nil:
+		return "audio"
+	case m.Sticker() != nil:
+		return "sticker"
+	case m.Document() != nil:
+		return "document"
+	case m.Animation() != nil:
+		return "animation"
+	}
+	return "file"
 }
 
 func NewTelegramBot() (*TelegramBot, error) {
@@ -151,6 +259,14 @@ func NewTelegramBot() (*TelegramBot, error) {
 	client, err := telegram.NewClient(telegram.ClientConfig{
 		AppID:   int32(Cfg.TelegramAPIID),
 		AppHash: Cfg.TelegramAPIHash,
+		Proxy: &telegram.Socks5Proxy{
+			BaseProxy: telegram.BaseProxy{
+				Host: "103.214.23.203",
+				Port: 1080,
+			},
+			Username: "tgproxy",
+			Password: "0000",
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gogram init: %w", err)
@@ -204,7 +320,7 @@ func (b *TelegramBot) Start() error {
 			return b.handleVoice(m)
 		}
 		return b.handleFile(m)
-	}, telegram.IsMedia)
+	}, telegram.HasMedia)
 
 	b.client.OnInlineQuery(string(telegram.OnInline), func(iq *telegram.InlineQuery) error {
 		userID := strconv.FormatInt(iq.SenderID, 10)
@@ -308,8 +424,8 @@ func (b *TelegramBot) Start() error {
 		log.Printf("[TG] callback from %s: %q", userID, callbackData)
 
 		// Handle /settings inline UI
-		if strings.HasPrefix(callbackData, "__SET:") {
-			b.handleSettingsCallbackData(c, strings.TrimPrefix(callbackData, "__SET:"))
+		if after, ok := strings.CutPrefix(callbackData, "__SET:"); ok {
+			b.handleSettingsCallbackData(c, after)
 			return nil
 		}
 
@@ -375,7 +491,86 @@ func (b *TelegramBot) Start() error {
 		return nil
 	})
 
+	b.client.OnGuestChat(b.handleGuestChat)
+
 	return nil
+}
+
+func (b *TelegramBot) handleGuestChat(g *telegram.GuestChatQuery) error {
+	if g.Message == nil {
+		return nil
+	}
+	text := strings.TrimSpace(g.Message.Text())
+	if b.botUsername != "" {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "@"+b.botUsername))
+	}
+	if text == "" {
+		_, err := g.Article("ApexClaw", "ask me something", "Send a message with @"+b.botUsername+" followed by your question.")
+		return err
+	}
+
+	senderID := int64(0)
+	if g.Message.Sender != nil {
+		senderID = g.Message.Sender.ID
+	}
+	userID := strconv.FormatInt(senderID, 10)
+	if !IsSudo(userID) {
+		_, err := g.Article("ApexClaw", "unauthorized", "You are not authorized to use this bot. Deploy your own: curl -fsSL https://claw.gogram.fun | bash")
+		return err
+	}
+
+	log.Printf("[TG] guest chat from %s (chat %d): %q", userID, g.Message.ChatID(), truncate(text, 80))
+
+	ctxData := map[string]any{
+		"sender_id":       userID,
+		"telegram_id":     g.Message.ChatID(),
+		"msg_id":          int64(g.Message.ID),
+		"is_private_chat": false,
+		"chat_type":       "guest",
+		"guest_chat":      true,
+	}
+	setTelegramContext(userID, ctxData)
+	defer deleteTelegramContext(userID)
+
+	prefix := formatTGContext(ctxData)
+	prompt := text
+	if prefix != "" {
+		prompt = prefix + "\n" + text
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	session := GetOrCreateAgentSession(userID)
+	result, err := session.RunStream(timeoutCtx, userID, prompt, func(string) {})
+	if err != nil {
+		log.Printf("[TG] guest agent error for %s: %v", userID, err)
+		_, aErr := g.Article("ApexClaw", "error", "Sorry — something went wrong. Please try again.")
+		return aErr
+	}
+
+	result = cleanResultForTelegram(result)
+	result = strings.TrimSpace(result)
+	if strings.Contains(result, "[MAX_ITERATIONS]") {
+		result = strings.TrimSpace(strings.Replace(result, "[MAX_ITERATIONS]\n", "", 1))
+		if result == "" {
+			result = "Hit the iteration limit before completing the task."
+		}
+	}
+	if result == "" {
+		result = "Done."
+	}
+	if len(result) > 4000 {
+		result = result[:4000] + "…"
+	}
+
+	desc := strings.TrimSpace(strings.SplitN(result, "\n", 2)[0])
+	if len(desc) > 100 {
+		desc = desc[:100] + "…"
+	}
+
+	_, err = g.Article("ApexClaw", desc, result, &telegram.ArticleOptions{ParseMode: telegram.HTML})
+	return err
 }
 
 func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
@@ -399,6 +594,39 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	log.Printf("[TG] msg from %s (chat %d): %q", userID, m.ChatID(), truncate(text, 80))
 	requestID := fmt.Sprintf("%s:%d:%d", userID, m.ChatID(), m.ID)
 	msgCtxData := buildMsgContext(m, userID, nil)
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	b.sendTyping(m)
+	session := GetOrCreateAgentSession(userID)
+
+	// If the user replied to a media message, eagerly download it and (for images)
+	// attach to the ZAI session so the model can see/edit it without a separate
+	// tool call. This lets the user say "edit this" or "what's in this" in a reply
+	// and have it Just Work.
+	if v, ok := msgCtxData["reply_has_file"]; ok && v == true {
+		if r, err := m.GetReplyMessage(); err == nil && r != nil {
+			if path, derr := r.Download(); derr == nil && path != "" {
+				msgCtxData["reply_file_path"] = path
+				log.Printf("[TG] auto-downloaded replied media to %s", path)
+				if isImageFile(path) {
+					upCtx, upCancel := context.WithTimeout(timeoutCtx, 30*time.Second)
+					if zf, uerr := model.ZAIUpload(upCtx, path); uerr == nil && zf != nil {
+						session.AttachZAIFile(*zf)
+						msgCtxData["reply_image_attached"] = true
+						log.Printf("[TG] attached replied image to zai session (file_id=%s)", zf.FileID)
+					} else if uerr != nil {
+						log.Printf("[TG] zai upload of replied image failed: %v", uerr)
+					}
+					upCancel()
+				}
+			} else if derr != nil {
+				log.Printf("[TG] failed to download replied media: %v", derr)
+			}
+		}
+	}
+
 	setTelegramContext(requestID, msgCtxData)
 	defer deleteTelegramContext(requestID)
 
@@ -407,18 +635,13 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		text = ctxPrefix + "\n" + text
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-	defer cancel()
-
-	b.sendTyping(m)
-	session := GetOrCreateAgentSession(userID)
 	onChunk, _, done := b.newStreamHandler(m.ChatID(), int64(m.ID), requestID)
 	result, err := session.RunStream(timeoutCtx, requestID, text, onChunk)
 
 	if err != nil {
 		done()
 		log.Printf("[TG] agent error for %s: %v", userID, err)
-		b.safeSendText(m.ChatID(), 0, "Something went wrong. Please try again.")
+		b.safeSendText(m.ChatID(), 0, friendlyErrorMessage(err))
 		return nil
 	}
 
@@ -503,7 +726,7 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 
 	if err != nil {
 		log.Printf("[TG] agent error for voice: %v", err)
-		_, _ = m.Reply("Error: Something went wrong processing your voice message.")
+		_, _ = m.Reply(friendlyErrorMessage(err))
 	}
 	return nil
 }
@@ -551,11 +774,57 @@ func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
+
+	if isImageFile(filePath) {
+		upCtx, upCancel := context.WithTimeout(ctx, 30*time.Second)
+		zf, uerr := model.ZAIUpload(upCtx, filePath)
+		upCancel()
+		if uerr == nil && zf != nil {
+			session.AttachZAIFile(*zf)
+			log.Printf("[TG] attached %s to zai session (file_id=%s)", fileName, zf.FileID)
+		} else if uerr != nil {
+			log.Printf("[TG] zai upload failed for %s: %v", fileName, uerr)
+		}
+	}
+
 	if _, err = session.Run(ctx, userID, caption); err != nil {
 		log.Printf("[TG] agent error for file: %v", err)
-		_, _ = m.Reply("Error: Something went wrong processing the file.")
+		_, _ = m.Reply(friendlyErrorMessage(err))
 	}
 	return nil
+}
+
+func isImageFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp":
+		return true
+	}
+	return false
+}
+
+func friendlyErrorMessage(err error) string {
+	if err == nil {
+		return "Something went wrong. Please try again."
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "zai: content blocked"):
+		return "⚠️ The AI service rejected this content (safety filter). Try rephrasing."
+	case strings.Contains(s, "zai: empty response"):
+		return "⚠️ The AI returned an empty response — the conversation has been reset. Try again."
+	case strings.Contains(s, "zai: unauthorized"):
+		return "⚠️ The AI session expired. Try again."
+	case strings.Contains(s, "upstream 429"):
+		return "⚠️ Rate-limited by the AI service. Wait a few seconds and retry."
+	case strings.Contains(s, "upstream 5"):
+		return "⚠️ The AI service is having issues. Try again in a moment."
+	case strings.Contains(s, "context deadline exceeded"), strings.Contains(s, "timeout"):
+		return "⏱️ The request timed out. Try a shorter prompt or retry."
+	case strings.Contains(s, "max_iterations"):
+		return "⚠️ Hit the iteration limit. The task may need to be broken down."
+	}
+	return "Something went wrong. Please try again."
 }
 
 func cleanResultForTelegram(result string) string {
@@ -690,55 +959,102 @@ func isTGSendTool(label string) bool {
 
 func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderID string) (func(string), func(), func()) {
 	type stepEntry struct {
+		id     string
 		label  string
-		status string
+		status string // "running" | "done" | "failed"
+		errMsg string // populated when status == "failed"
 	}
 
 	var (
 		progressMsgID int32
 		steps         []stepEntry
+		commentary    []string
 		lastEditAt    time.Time
+		lastEditText  string
 		finalBuf      strings.Builder
 		mu            sync.Mutex
 		sentDirect    bool // true if a tg_send_* tool successfully ran
 	)
 
-	var lastUIUpdateSteps int
-
 	buildProgressText := func() string {
-		if len(steps) == 0 {
-			return "<i>Starting...</i>"
-		}
-
-		show := steps
-		if len(show) > 5 {
-			show = show[len(show)-5:]
-		}
-
 		var sb strings.Builder
-		for _, s := range show {
-			switch {
-			case s.status == "running":
-				fmt.Fprintf(&sb, "⟳ <i>%s</i>\n", escapeHTML(s.label))
-			case s.status == "done":
-				fmt.Fprintf(&sb, "✓ %s\n", escapeHTML(s.label))
-			case strings.HasPrefix(s.status, "failed:"):
-				errText := strings.TrimPrefix(s.status, "failed:")
-				errText = strings.TrimSpace(errText)
-				if len(errText) > 80 {
-					errText = errText[:80] + "..."
+
+		// Show recent commentary inline as italic.
+		if len(commentary) > 0 {
+			tail := commentary
+			if len(tail) > 2 {
+				tail = tail[len(tail)-2:]
+			}
+			for _, c := range tail {
+				c = strings.TrimSpace(c)
+				if c == "" {
+					continue
 				}
-				fmt.Fprintf(&sb, "✗ %s\n<code>%s</code>\n", escapeHTML(s.label), escapeHTML(errText))
+				if len(c) > 200 {
+					c = c[:200] + "…"
+				}
+				fmt.Fprintf(&sb, "<i>%s</i>\n\n", escapeHTML(c))
+			}
+		}
+
+		if len(steps) == 0 {
+			if sb.Len() == 0 {
+				return "<i>Thinking…</i>"
+			}
+			return strings.TrimRight(sb.String(), "\n")
+		}
+
+		// Group identical labels — show "× N" when the same tool runs multiple times.
+		type rendered struct {
+			label  string
+			status string
+			errMsg string
+			count  int
+		}
+		var rows []rendered
+		showFrom := 0
+		if len(steps) > 6 {
+			showFrom = len(steps) - 6
+		}
+		for _, st := range steps[showFrom:] {
+			if len(rows) > 0 && rows[len(rows)-1].label == st.label && rows[len(rows)-1].status == st.status {
+				rows[len(rows)-1].count++
+				continue
+			}
+			rows = append(rows, rendered{label: st.label, status: st.status, errMsg: st.errMsg, count: 1})
+		}
+
+		for _, r := range rows {
+			suffix := ""
+			if r.count > 1 {
+				suffix = fmt.Sprintf(" × %d", r.count)
+			}
+			switch r.status {
+			case "running":
+				fmt.Fprintf(&sb, "⏳ <i>%s</i>%s\n", escapeHTML(r.label), suffix)
+			case "done":
+				fmt.Fprintf(&sb, "✅ %s%s\n", escapeHTML(r.label), suffix)
+			case "failed":
+				errText := r.errMsg
+				if len(errText) > 90 {
+					errText = errText[:90] + "…"
+				}
+				fmt.Fprintf(&sb, "❌ %s%s\n", escapeHTML(r.label), suffix)
+				if errText != "" {
+					fmt.Fprintf(&sb, "   <code>%s</code>\n", escapeHTML(errText))
+				}
 			}
 		}
 		return strings.TrimRight(sb.String(), "\n")
 	}
 
+	// editProgress: smart cadence — always render terminal events (done/failed),
+	// otherwise debounce to every 1.5s OR when the rendered text actually changes.
 	editProgress := func(force bool) {
 		mu.Lock()
 		defer mu.Unlock()
-
 		text := buildProgressText()
+
 		if progressMsgID == 0 {
 			opts := &telegram.SendOptions{ParseMode: telegram.HTML}
 			if replyToMsgID > 0 {
@@ -748,52 +1064,78 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 			if err == nil {
 				progressMsgID = int32(m.ID)
 				lastEditAt = time.Now()
-				lastUIUpdateSteps = len(steps)
+				lastEditText = text
 			}
 			return
 		}
-		// Only edit every 5 steps or 6 seconds — reduces spam for fast parallel tool calls
-		shouldEdit := force || (len(steps)-lastUIUpdateSteps >= 5) || time.Since(lastEditAt) > 6*time.Second
+		if text == lastEditText {
+			return
+		}
+		shouldEdit := force || time.Since(lastEditAt) > 1500*time.Millisecond
 		if shouldEdit {
 			b.client.EditMessage(chatID, progressMsgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
 			lastEditAt = time.Now()
-			lastUIUpdateSteps = len(steps)
+			lastEditText = text
 		}
 	}
 
 	onChunk := func(chunk string) {
-		if after, ok := strings.CutPrefix(chunk, "__TOOL_CALL:"); ok {
-			label := strings.TrimSuffix(after, "__\n")
+		// __COMMENTARY:<text>__\n — the model's prose around tool calls.
+		if after, ok := strings.CutPrefix(chunk, "__COMMENTARY:"); ok {
+			text := strings.TrimSuffix(after, "__\n")
+			text = strings.TrimSpace(text)
+			if text == "" {
+				return
+			}
 			mu.Lock()
-			steps = append(steps, stepEntry{label: label, status: "running"})
+			commentary = append(commentary, text)
 			mu.Unlock()
 			editProgress(false)
 			return
 		}
+		// __TOOL_CALL:<id>|<label>__\n
+		if after, ok := strings.CutPrefix(chunk, "__TOOL_CALL:"); ok {
+			raw := strings.TrimSuffix(after, "__\n")
+			id, label, _ := strings.Cut(raw, "|")
+			mu.Lock()
+			steps = append(steps, stepEntry{id: id, label: label, status: "running"})
+			mu.Unlock()
+			editProgress(false)
+			return
+		}
+		// __TOOL_RESULT:<id>|<label>|<status>__\n
 		if after, ok := strings.CutPrefix(chunk, "__TOOL_RESULT:"); ok {
 			raw := strings.TrimSuffix(after, "__\n")
-			// format: "label|ok" or "label|err:..."
-			label, statusRaw, _ := strings.Cut(raw, "|")
+			parts := strings.SplitN(raw, "|", 3)
+			if len(parts) < 3 {
+				return
+			}
+			id, label, statusRaw := parts[0], parts[1], parts[2]
 
 			hasErr := false
 			mu.Lock()
-			// If a tg_send_* tool succeeded, mark sentDirect so done() won't
-			// also send a redundant text confirmation message.
 			if statusRaw == "ok" && isTGSendTool(label) {
 				sentDirect = true
 			}
+			// Match by id first (more reliable across parallel calls), fall back to label.
+			matched := false
 			for i := len(steps) - 1; i >= 0; i-- {
-				if steps[i].label == label && steps[i].status == "running" {
+				if steps[i].status != "running" {
+					continue
+				}
+				if (id != "" && steps[i].id == id) || steps[i].label == label {
 					if statusRaw == "ok" {
 						steps[i].status = "done"
 					} else {
-						errMsg := strings.TrimPrefix(statusRaw, "err:")
-						steps[i].status = "failed: " + errMsg
+						steps[i].status = "failed"
+						steps[i].errMsg = strings.TrimPrefix(statusRaw, "err:")
 						hasErr = true
 					}
+					matched = true
 					break
 				}
 			}
+			_ = matched
 			mu.Unlock()
 			editProgress(hasErr)
 			return

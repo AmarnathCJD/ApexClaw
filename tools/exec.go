@@ -3,43 +3,47 @@ package tools
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	osexec "os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
+
+// needsLongTimeout returns true for package-manager / install style commands
+// that legitimately take minutes (npm install, pip install, cargo, etc.).
+func needsLongTimeout(cmd string) bool {
+	return strings.Contains(cmd, "npm install") || strings.Contains(cmd, "npm i ") ||
+		strings.Contains(cmd, "pip install") || strings.Contains(cmd, "pip3 install") ||
+		strings.Contains(cmd, "go get") || strings.Contains(cmd, "cargo") ||
+		strings.Contains(cmd, "apt-get") || strings.Contains(cmd, "brew") ||
+		strings.Contains(cmd, "yarn install") || strings.Contains(cmd, "bun install")
+}
 
 var Exec = &ToolDef{
 	Name:        "exec",
 	Description: "Run a shell/system command. Returns combined stdout+stderr. Auto-detects long-running commands (npm install, pip install, etc) and increases timeout.",
 	Secure:      true,
+	Timeout:     -1, // tool manages its own timeout internally (up to 10 min for installs)
+	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
-		{Name: "cmd", Description: "Shell command to execute", Required: true},
-		{Name: "timeout", Description: "Timeout in seconds (default: auto-detect, min 30, max 600)", Required: false},
+		{Name: "cmd", Type: ArgString, Description: "Shell command to execute", Required: true},
+		{Name: "timeout", Type: ArgInt, Description: "Timeout in seconds (default: auto-detect, min 30, max 600)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		cmd := args["cmd"]
+	Execute: func(args map[string]any) string {
+		cmd := String(args, "cmd")
 		if cmd == "" {
 			return "Error: cmd is required"
 		}
 
 		timeoutSec := 30
-		if strings.Contains(cmd, "npm install") || strings.Contains(cmd, "npm i ") ||
-			strings.Contains(cmd, "pip install") || strings.Contains(cmd, "pip3 install") ||
-			strings.Contains(cmd, "go get") || strings.Contains(cmd, "cargo") ||
-			strings.Contains(cmd, "apt-get") || strings.Contains(cmd, "brew") ||
-			strings.Contains(cmd, "yarn install") || strings.Contains(cmd, "bun install") {
+		if needsLongTimeout(cmd) {
 			timeoutSec = 300
 		}
 
-		if t := args["timeout"]; t != "" {
-			if parsedT, err := strconv.Atoi(t); err == nil {
-				timeoutSec = parsedT
-			}
+		if t, ok := Int(args, "timeout"); ok {
+			timeoutSec = t
 		}
 		if timeoutSec < 30 {
 			timeoutSec = 30
@@ -68,16 +72,16 @@ var Exec = &ToolDef{
 
 		result := strings.TrimSpace(string(out))
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("Error: Timeout after %ds.\n%s", timeoutSec, result)
+			return fmt.Sprintf("⏱️ TIMEOUT after %ds.\n%s", timeoutSec, result)
 		}
 		if err != nil {
-			return fmt.Sprintf("Error: Exit error: %v\n%s", err, result)
+			return fmt.Sprintf("❌ FAIL: Exit error: %v\n%s", err, result)
 		}
 		if len(result) > 8000 {
 			result = result[:8000] + "\n...(truncated)"
 		}
 		if result == "" {
-			return "(completed)"
+			return "✅ OK (completed)"
 		}
 		return result
 	},
@@ -110,34 +114,23 @@ var ExecChain = &ToolDef{
 	Name:        "exec_chain",
 	Description: "Execute multiple shell commands in sequence. Returns all outputs. Stops on first error by default. Saves iterations for multi-step CLI tasks.",
 	Secure:      true,
+	Timeout:     -1,
+	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
-		{Name: "commands", Description: "JSON array of commands: [\"cmd1\", \"cmd2\", \"cmd3\"]", Required: true},
-		{Name: "timeout", Description: "Timeout per command in seconds (default: 60, max: 300)", Required: false},
-		{Name: "stop_on_error", Description: "Stop on first error (default: true)", Required: false},
+		{Name: "commands", Type: ArgList, Description: "List of shell commands to run in order, e.g. [\"cmd1\", \"cmd2\", \"cmd3\"]", Required: true},
+		{Name: "timeout", Type: ArgInt, Description: "Timeout per command in seconds (default: 60, max: 600)", Required: false},
+		{Name: "stop_on_error", Type: ArgBool, Description: "Stop on first error (default: true)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		cmdsJSON := args["commands"]
-		if cmdsJSON == "" {
-			return "Error: commands is required"
-		}
-
-		var commands []string
-		if err := json.Unmarshal([]byte(cmdsJSON), &commands); err != nil {
-			return fmt.Sprintf("Error parsing commands JSON: %v", err)
-		}
+	Execute: func(args map[string]any) string {
+		commands := List(args, "commands")
 		if len(commands) == 0 {
-			return "Error: commands array is empty"
+			return "Error: commands is required and must be a non-empty list"
 		}
 		if len(commands) > 20 {
 			return "Error: max 20 commands per chain"
 		}
 
-		timeoutSec := 60
-		if t := args["timeout"]; t != "" {
-			if parsedT, err := strconv.Atoi(t); err == nil {
-				timeoutSec = parsedT
-			}
-		}
+		timeoutSec := IntOr(args, "timeout", 60)
 		if timeoutSec < 30 {
 			timeoutSec = 30
 		}
@@ -145,18 +138,14 @@ var ExecChain = &ToolDef{
 			timeoutSec = 600
 		}
 
-		stopOnError := args["stop_on_error"] != "false"
+		stopOnError := BoolOr(args, "stop_on_error", true)
 
 		var results []string
 		total := len(commands)
 
 		for i, cmd := range commands {
 			cmdTimeout := timeoutSec
-			if strings.Contains(cmd, "npm install") || strings.Contains(cmd, "npm i ") ||
-				strings.Contains(cmd, "pip install") || strings.Contains(cmd, "pip3 install") ||
-				strings.Contains(cmd, "go get") || strings.Contains(cmd, "cargo") ||
-				strings.Contains(cmd, "apt-get") || strings.Contains(cmd, "brew") ||
-				strings.Contains(cmd, "yarn install") || strings.Contains(cmd, "bun install") {
+			if needsLongTimeout(cmd) {
 				cmdTimeout = 300
 			}
 
@@ -165,7 +154,7 @@ var ExecChain = &ToolDef{
 			elapsed := time.Since(start)
 
 			if timedOut {
-				results = append(results, fmt.Sprintf("[%d/%d] TIMEOUT after %ds\n%s\n%s", i+1, total, cmdTimeout, cmd, result))
+				results = append(results, fmt.Sprintf("[%d/%d] ⏱️ TIMEOUT after %ds\n%s\n%s", i+1, total, cmdTimeout, cmd, result))
 				if stopOnError {
 					break
 				}
@@ -173,7 +162,7 @@ var ExecChain = &ToolDef{
 			}
 
 			if cmdErr != nil {
-				results = append(results, fmt.Sprintf("[%d/%d] FAILED (%.1fs)\n%s\n%s", i+1, total, elapsed.Seconds(), cmd, result))
+				results = append(results, fmt.Sprintf("[%d/%d] ❌ FAIL (%.1fs)\n%s\n%s", i+1, total, elapsed.Seconds(), cmd, result))
 				if stopOnError {
 					break
 				}
@@ -187,7 +176,7 @@ var ExecChain = &ToolDef{
 			if output == "" {
 				output = "(ok)"
 			}
-			results = append(results, fmt.Sprintf("[%d/%d] OK (%.1fs)\n%s", i+1, total, elapsed.Seconds(), cmd))
+			results = append(results, fmt.Sprintf("[%d/%d] ✅ OK (%.1fs)\n%s", i+1, total, elapsed.Seconds(), cmd))
 			if output != "(ok)" {
 				results[len(results)-1] += fmt.Sprintf("\n%s", output)
 			}
@@ -201,11 +190,13 @@ var RunPython = &ToolDef{
 	Name:        "run_python",
 	Description: "Execute a Python code snippet. Writes to a temp file and runs with python3. Returns stdout+stderr. Timeout is 60s.",
 	Secure:      true,
+	Timeout:     -1,
+	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
-		{Name: "code", Description: "Python code to execute", Required: true},
+		{Name: "code", Type: ArgString, Description: "Python code to execute", Required: true},
 	},
-	Execute: func(args map[string]string) string {
-		code := args["code"]
+	Execute: func(args map[string]any) string {
+		code := String(args, "code")
 		if code == "" {
 			return "Error: code is required"
 		}
@@ -230,16 +221,16 @@ var RunPython = &ToolDef{
 
 		result := strings.TrimSpace(out.String())
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("Python timed out (60s).\n%s", result)
+			return fmt.Sprintf("⏱️ Python timed out (60s).\n%s", result)
 		}
 		if err != nil {
-			return fmt.Sprintf("Python error: %v\n%s", err, result)
+			return fmt.Sprintf("❌ Python error: %v\n%s", err, result)
 		}
 		if len(result) > 8000 {
 			result = result[:8000] + "\n...(truncated)"
 		}
 		if result == "" {
-			return "(no output)"
+			return "✅ (no output)"
 		}
 		return result
 	},

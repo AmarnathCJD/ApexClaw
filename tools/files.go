@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -20,7 +19,7 @@ func sanitizeFileContent(content string) string {
 	content = strings.ReplaceAll(content, "</think>", "")
 	content = strings.ReplaceAll(content, "<think>", "")
 	if !utf8.ValidString(content) {
-		content = strings.ToValidUTF8(content, "\uFFFD")
+		content = strings.ToValidUTF8(content, "�")
 	}
 	var b strings.Builder
 	b.Grow(len(content))
@@ -57,20 +56,40 @@ func writeLines(path string, lines []string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+func fmtSize(b int64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
 // ─── read_file ────────────────────────────────────────────────────────────────
 
 var ReadFile = &ToolDef{
 	Name: "read_file",
 	Description: "Read a file from disk. Supports optional line range with start_line/end_line (1-based, inclusive). " +
 		"Returns content with line numbers prefixed. Handles large files gracefully.",
-	Secure: true,
+	Secure:    true,
+	MaxOutput: 32 * 1024, // generous cap; larger files spill
 	Args: []ToolArg{
-		{Name: "path", Description: "File path to read", Required: true},
-		{Name: "start_line", Description: "First line to return (1-based, default: 1)", Required: false},
-		{Name: "end_line", Description: "Last line to return (1-based, default: all)", Required: false},
+		{Name: "path", Type: ArgString, Description: "File path to read", Required: true},
+		{Name: "start_line", Type: ArgInt, Description: "First line to return (1-based, default: 1)", Required: false},
+		{Name: "end_line", Type: ArgInt, Description: "Last line to return (1-based, default: all)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
@@ -93,17 +112,13 @@ var ReadFile = &ToolDef{
 		}
 		total := len(lines)
 
-		start := 1
-		end := total
-		if s := strings.TrimSpace(args["start_line"]); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n >= 1 {
-				start = n
-			}
+		start := IntOr(args, "start_line", 1)
+		if start < 1 {
+			start = 1
 		}
-		if e := strings.TrimSpace(args["end_line"]); e != "" {
-			if n, err := strconv.Atoi(e); err == nil && n >= 1 {
-				end = n
-			}
+		end := IntOr(args, "end_line", total)
+		if end < 1 {
+			end = total
 		}
 		if start > total {
 			return fmt.Sprintf("Error: start_line %d exceeds file length %d", start, total)
@@ -148,12 +163,12 @@ var WriteFile = &ToolDef{
 		"Set backup=false to skip backup. Returns byte count and line count on success.",
 	Secure: true,
 	Args: []ToolArg{
-		{Name: "path", Description: "File path to write to", Required: true},
-		{Name: "content", Description: "Content to write", Required: true},
-		{Name: "backup", Description: "Create .bak backup of existing file (default: true)", Required: false},
+		{Name: "path", Type: ArgString, Description: "File path to write to", Required: true},
+		{Name: "content", Type: ArgString, Description: "Content to write", Required: true},
+		{Name: "backup", Type: ArgBool, Description: "Create .bak backup of existing file (default: true)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
@@ -162,14 +177,14 @@ var WriteFile = &ToolDef{
 			return fmt.Sprintf("Error: %v", err)
 		}
 		path = safe
-		content := sanitizeFileContent(args["content"])
+		content := sanitizeFileContent(String(args, "content"))
 
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return fmt.Sprintf("Error creating directories: %v", err)
 		}
 
 		// Backup existing file
-		doBackup := args["backup"] != "false"
+		doBackup := BoolOr(args, "backup", true)
 		if doBackup {
 			if _, err := os.Stat(path); err == nil {
 				if err := copyFile(path, path+".bak"); err != nil {
@@ -184,14 +199,6 @@ var WriteFile = &ToolDef{
 		lines := strings.Count(content, "\n")
 		return fmt.Sprintf("OK — wrote %d bytes, %d lines to %s", len(content), lines, path)
 	},
-}
-
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0644)
 }
 
 // ─── edit_file ────────────────────────────────────────────────────────────────
@@ -209,17 +216,17 @@ var EditFile = &ToolDef{
 		"Always backs up to <path>.bak before editing.",
 	Secure: true,
 	Args: []ToolArg{
-		{Name: "path", Description: "File path to edit", Required: true},
-		{Name: "mode", Description: "Edit mode: replace_lines | insert_after | insert_before | delete_lines | replace_text | replace_all", Required: true},
-		{Name: "old_text", Description: "Text to find (for replace_text / replace_all modes)", Required: false},
-		{Name: "new_text", Description: "Replacement text (for replace_text / replace_all modes)", Required: false},
-		{Name: "new_content", Description: "New content to insert/replace (for line-based modes)", Required: false},
-		{Name: "start_line", Description: "First line number (1-based) for line-based modes", Required: false},
-		{Name: "end_line", Description: "Last line number (1-based) for replace_lines / delete_lines", Required: false},
-		{Name: "line_number", Description: "Line number for insert_after / insert_before", Required: false},
+		{Name: "path", Type: ArgString, Description: "File path to edit", Required: true},
+		{Name: "mode", Type: ArgString, Description: "Edit mode: replace_lines | insert_after | insert_before | delete_lines | replace_text | replace_all", Required: true},
+		{Name: "old_text", Type: ArgString, Description: "Text to find (for replace_text / replace_all modes)", Required: false},
+		{Name: "new_text", Type: ArgString, Description: "Replacement text (for replace_text / replace_all modes)", Required: false},
+		{Name: "new_content", Type: ArgString, Description: "New content to insert/replace (for line-based modes)", Required: false},
+		{Name: "start_line", Type: ArgInt, Description: "First line number (1-based) for line-based modes", Required: false},
+		{Name: "end_line", Type: ArgInt, Description: "Last line number (1-based) for replace_lines / delete_lines", Required: false},
+		{Name: "line_number", Type: ArgInt, Description: "Line number for insert_after / insert_before", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
@@ -228,7 +235,7 @@ var EditFile = &ToolDef{
 			return fmt.Sprintf("Error: %v", err)
 		}
 		path = safe
-		mode := strings.TrimSpace(args["mode"])
+		mode := String(args, "mode")
 		if mode == "" {
 			return "Error: mode is required"
 		}
@@ -246,8 +253,8 @@ var EditFile = &ToolDef{
 			if err != nil {
 				return fmt.Sprintf("Error reading file: %v", err)
 			}
-			old := args["old_text"]
-			newT := args["new_text"]
+			old := String(args, "old_text")
+			newT := String(args, "new_text")
 			if old == "" {
 				return "Error: old_text is required for replace_text/replace_all"
 			}
@@ -283,25 +290,24 @@ var EditFile = &ToolDef{
 			}
 			total := len(lines)
 
-			parseInt := func(key string) (int, string) {
-				s := strings.TrimSpace(args[key])
-				if s == "" {
+			parsePositiveInt := func(key string) (int, string) {
+				n, ok := Int(args, key)
+				if !ok {
 					return 0, fmt.Sprintf("Error: %s is required for %s mode", key, mode)
 				}
-				n, err := strconv.Atoi(s)
-				if err != nil || n < 1 {
-					return 0, fmt.Sprintf("Error: %s must be a positive integer, got %q", key, s)
+				if n < 1 {
+					return 0, fmt.Sprintf("Error: %s must be a positive integer, got %d", key, n)
 				}
 				return n, ""
 			}
 
 			switch mode {
 			case "replace_lines":
-				start, errs := parseInt("start_line")
+				start, errs := parsePositiveInt("start_line")
 				if errs != "" {
 					return errs
 				}
-				end, errs := parseInt("end_line")
+				end, errs := parsePositiveInt("end_line")
 				if errs != "" {
 					return errs
 				}
@@ -311,7 +317,7 @@ var EditFile = &ToolDef{
 				if start > end {
 					return fmt.Sprintf("Error: start_line %d > end_line %d", start, end)
 				}
-				newLines := strings.Split(sanitizeFileContent(args["new_content"]), "\n")
+				newLines := strings.Split(sanitizeFileContent(String(args, "new_content")), "\n")
 				result := append(lines[:start-1], append(newLines, lines[end:]...)...)
 				if err := writeLines(path, result); err != nil {
 					return fmt.Sprintf("Error writing file: %v", err)
@@ -319,11 +325,11 @@ var EditFile = &ToolDef{
 				return fmt.Sprintf("OK — replaced lines %d–%d (%d lines → %d lines) in %s", start, end, end-start+1, len(newLines), path)
 
 			case "delete_lines":
-				start, errs := parseInt("start_line")
+				start, errs := parsePositiveInt("start_line")
 				if errs != "" {
 					return errs
 				}
-				end, errs := parseInt("end_line")
+				end, errs := parsePositiveInt("end_line")
 				if errs != "" {
 					return errs
 				}
@@ -337,14 +343,14 @@ var EditFile = &ToolDef{
 				return fmt.Sprintf("OK — deleted lines %d–%d (%d lines removed) from %s", start, end, end-start+1, path)
 
 			case "insert_after", "insert_before":
-				lineNum, errs := parseInt("line_number")
+				lineNum, errs := parsePositiveInt("line_number")
 				if errs != "" {
 					return errs
 				}
 				if lineNum > total {
 					return fmt.Sprintf("Error: line_number %d out of bounds (file has %d lines)", lineNum, total)
 				}
-				newLines := strings.Split(sanitizeFileContent(args["new_content"]), "\n")
+				newLines := strings.Split(sanitizeFileContent(String(args, "new_content")), "\n")
 				var result []string
 				if mode == "insert_before" {
 					result = append(lines[:lineNum-1], append(newLines, lines[lineNum-1:]...)...)
@@ -365,6 +371,55 @@ var EditFile = &ToolDef{
 	},
 }
 
+// ─── append_file ─────────────────────────────────────────────────────────────
+
+var AppendFile = &ToolDef{
+	Name:        "append_file",
+	Description: "Append text to an existing file (creates if not exists). Adds a newline separator if the file doesn't end with one.",
+	Secure:      true,
+	Args: []ToolArg{
+		{Name: "path", Type: ArgString, Description: "File path to append to", Required: true},
+		{Name: "content", Type: ArgString, Description: "Content to append", Required: true},
+	},
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
+		if path == "" {
+			return "Error: path is required"
+		}
+		safe, err := SafeFilePath(path)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		path = safe
+		content := sanitizeFileContent(String(args, "content"))
+
+		// Ensure separator newline if file exists and doesn't end with one
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			f, err := os.Open(path)
+			if err == nil {
+				buf := make([]byte, 1)
+				f.Seek(-1, 2)
+				f.Read(buf)
+				f.Close()
+				if buf[0] != '\n' {
+					content = "\n" + content
+				}
+			}
+		}
+
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		defer f.Close()
+		n, err := f.WriteString(content)
+		if err != nil {
+			return fmt.Sprintf("Error writing: %v", err)
+		}
+		return fmt.Sprintf("OK — appended %d bytes to %s", n, path)
+	},
+}
+
 // ─── grep_file ────────────────────────────────────────────────────────────────
 
 var GrepFile = &ToolDef{
@@ -374,20 +429,21 @@ var GrepFile = &ToolDef{
 		"Supports regex. Set dir=true to search recursively in a directory.",
 	Secure: true,
 	Args: []ToolArg{
-		{Name: "path", Description: "File path or directory to search", Required: true},
-		{Name: "pattern", Description: "Search pattern (regex supported)", Required: true},
-		{Name: "context_lines", Description: "Lines of context before and after each match (default: 0)", Required: false},
-		{Name: "ignore_case", Description: "Case-insensitive search (true/false, default: false)", Required: false},
-		{Name: "max_matches", Description: "Maximum matches to return (default: 50)", Required: false},
+		{Name: "path", Type: ArgString, Description: "File path or directory to search", Required: true},
+		{Name: "pattern", Type: ArgString, Description: "Search pattern (regex supported)", Required: true},
+		{Name: "context_lines", Type: ArgInt, Description: "Lines of context before and after each match (default: 0)", Required: false},
+		{Name: "ignore_case", Type: ArgBool, Description: "Case-insensitive search (true/false, default: false)", Required: false},
+		{Name: "max_matches", Type: ArgInt, Description: "Maximum matches to return (default: 50)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
-		pattern := args["pattern"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
+		pattern := String(args, "pattern")
 		if path == "" || pattern == "" {
 			return "Error: path and pattern are required"
 		}
+		origPattern := pattern
 
-		if args["ignore_case"] == "true" {
+		if BoolOr(args, "ignore_case", false) {
 			pattern = "(?i)" + pattern
 		}
 		re, err := regexp.Compile(pattern)
@@ -395,17 +451,13 @@ var GrepFile = &ToolDef{
 			return fmt.Sprintf("Error: invalid regex pattern: %v", err)
 		}
 
-		ctxLines := 0
-		if c := strings.TrimSpace(args["context_lines"]); c != "" {
-			if n, err := strconv.Atoi(c); err == nil && n >= 0 {
-				ctxLines = n
-			}
+		ctxLines := IntOr(args, "context_lines", 0)
+		if ctxLines < 0 {
+			ctxLines = 0
 		}
-		maxMatches := 50
-		if m := strings.TrimSpace(args["max_matches"]); m != "" {
-			if n, err := strconv.Atoi(m); err == nil && n > 0 {
-				maxMatches = n
-			}
+		maxMatches := IntOr(args, "max_matches", 50)
+		if maxMatches <= 0 {
+			maxMatches = 50
 		}
 
 		type match struct {
@@ -471,11 +523,11 @@ var GrepFile = &ToolDef{
 		}
 
 		if len(matches) == 0 {
-			return fmt.Sprintf("No matches for %q in %s", args["pattern"], path)
+			return fmt.Sprintf("No matches for %q in %s", origPattern, path)
 		}
 
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "Found %d match(es) for %q", totalFound, args["pattern"])
+		fmt.Fprintf(&sb, "Found %d match(es) for %q", totalFound, origPattern)
 		if totalFound > maxMatches {
 			fmt.Fprintf(&sb, " (showing first %d)", maxMatches)
 		}
@@ -503,55 +555,6 @@ var GrepFile = &ToolDef{
 	},
 }
 
-// ─── append_file ─────────────────────────────────────────────────────────────
-
-var AppendFile = &ToolDef{
-	Name:        "append_file",
-	Description: "Append text to an existing file (creates if not exists). Adds a newline separator if the file doesn't end with one.",
-	Secure:      true,
-	Args: []ToolArg{
-		{Name: "path", Description: "File path to append to", Required: true},
-		{Name: "content", Description: "Content to append", Required: true},
-	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
-		if path == "" {
-			return "Error: path is required"
-		}
-		safe, err := SafeFilePath(path)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err)
-		}
-		path = safe
-		content := sanitizeFileContent(args["content"])
-
-		// Ensure separator newline if file exists and doesn't end with one
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			f, err := os.Open(path)
-			if err == nil {
-				buf := make([]byte, 1)
-				f.Seek(-1, 2)
-				f.Read(buf)
-				f.Close()
-				if buf[0] != '\n' {
-					content = "\n" + content
-				}
-			}
-		}
-
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err)
-		}
-		defer f.Close()
-		n, err := f.WriteString(content)
-		if err != nil {
-			return fmt.Sprintf("Error writing: %v", err)
-		}
-		return fmt.Sprintf("OK — appended %d bytes to %s", n, path)
-	},
-}
-
 // ─── list_dir ─────────────────────────────────────────────────────────────────
 
 var ListDir = &ToolDef{
@@ -559,15 +562,12 @@ var ListDir = &ToolDef{
 	Description: "List files and directories at a given path. Set recursive=true for tree view.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "path", Description: "Directory path (defaults to current directory)", Required: false},
-		{Name: "recursive", Description: "Show full tree (true/false, default: false)", Required: false},
+		{Name: "path", Type: ArgString, Description: "Directory path (defaults to current directory)", Required: false},
+		{Name: "recursive", Type: ArgBool, Description: "Show full tree (true/false, default: false)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		root := args["path"]
-		if root == "" {
-			root = "."
-		}
-		recursive := args["recursive"] == "true"
+	Execute: func(args map[string]any) string {
+		root := StringOr(args, "path", ".")
+		recursive := BoolOr(args, "recursive", false)
 
 		if !recursive {
 			entries, err := os.ReadDir(root)
@@ -625,17 +625,6 @@ var ListDir = &ToolDef{
 	},
 }
 
-func fmtSize(b int64) string {
-	switch {
-	case b >= 1<<20:
-		return fmt.Sprintf("%.1fMB", float64(b)/(1<<20))
-	case b >= 1<<10:
-		return fmt.Sprintf("%.1fKB", float64(b)/(1<<10))
-	default:
-		return fmt.Sprintf("%dB", b)
-	}
-}
-
 // ─── create_dir ───────────────────────────────────────────────────────────────
 
 var CreateDir = &ToolDef{
@@ -643,10 +632,10 @@ var CreateDir = &ToolDef{
 	Description: "Create a directory (and any missing parent directories)",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "path", Description: "Directory path to create", Required: true},
+		{Name: "path", Type: ArgString, Description: "Directory path to create", Required: true},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
@@ -669,11 +658,11 @@ var DeleteFile = &ToolDef{
 	Description: "Delete a file or an empty directory. Use recursive=true to delete a directory and all contents.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "path", Description: "File or directory path to delete", Required: true},
-		{Name: "recursive", Description: "Delete directory recursively (true/false, default: false)", Required: false},
+		{Name: "path", Type: ArgString, Description: "File or directory path to delete", Required: true},
+		{Name: "recursive", Type: ArgBool, Description: "Delete directory recursively (true/false, default: false)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		path := args["path"]
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
@@ -682,7 +671,7 @@ var DeleteFile = &ToolDef{
 			return fmt.Sprintf("Error: %v", err)
 		}
 		path = safe
-		if args["recursive"] == "true" {
+		if BoolOr(args, "recursive", false) {
 			err = os.RemoveAll(path)
 		} else {
 			err = os.Remove(path)
@@ -701,12 +690,12 @@ var MoveFile = &ToolDef{
 	Description: "Move or rename a file or directory",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "src", Description: "Source path", Required: true},
-		{Name: "dst", Description: "Destination path", Required: true},
+		{Name: "src", Type: ArgString, Description: "Source path", Required: true},
+		{Name: "dst", Type: ArgString, Description: "Destination path", Required: true},
 	},
-	Execute: func(args map[string]string) string {
-		src := args["src"]
-		dst := args["dst"]
+	Execute: func(args map[string]any) string {
+		src := String(args, "src")
+		dst := String(args, "dst")
 		if src == "" || dst == "" {
 			return "Error: both src and dst are required"
 		}
@@ -736,24 +725,19 @@ var SearchFiles = &ToolDef{
 	Description: "Search for files matching a name pattern recursively. Supports glob patterns like '*.go', '*config*', '**/*.json'.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "dir", Description: "Root directory to search in (defaults to current directory)", Required: false},
-		{Name: "pattern", Description: "Glob pattern to match filenames (e.g. '*.go', '*test*')", Required: true},
-		{Name: "max_results", Description: "Maximum results to return (default: 100)", Required: false},
+		{Name: "dir", Type: ArgString, Description: "Root directory to search in (defaults to current directory)", Required: false},
+		{Name: "pattern", Type: ArgString, Description: "Glob pattern to match filenames (e.g. '*.go', '*test*')", Required: true},
+		{Name: "max_results", Type: ArgInt, Description: "Maximum results to return (default: 100)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		root := args["dir"]
-		if root == "" {
-			root = "."
-		}
-		pattern := args["pattern"]
+	Execute: func(args map[string]any) string {
+		root := StringOr(args, "dir", ".")
+		pattern := String(args, "pattern")
 		if pattern == "" {
 			return "Error: pattern is required"
 		}
-		maxResults := 100
-		if m := strings.TrimSpace(args["max_results"]); m != "" {
-			if n, err := strconv.Atoi(m); err == nil && n > 0 {
-				maxResults = n
-			}
+		maxResults := IntOr(args, "max_results", 100)
+		if maxResults <= 0 {
+			maxResults = 100
 		}
 
 		var matches []string
@@ -776,5 +760,52 @@ var SearchFiles = &ToolDef{
 			suffix = fmt.Sprintf("\n(limited to %d results)", maxResults)
 		}
 		return fmt.Sprintf("Found %d match(es):\n%s%s", len(matches), strings.Join(matches, "\n"), suffix)
+	},
+}
+
+// ReadToolOutput retrieves a byte range from a tool-output spill file written
+// by the agent layer when a single tool result exceeded its MaxOutput cap.
+// Only files in the system temp directory with the "apexclaw-" prefix are
+// readable — prevents arbitrary file disclosure.
+var ReadToolOutput = &ToolDef{
+	Name: "read_tool_output",
+	Description: "Read a byte range from a previously-truncated tool output spill file. " +
+		"Use the spill path from a '(truncated, full output at <path>)' marker.",
+	MaxOutput: -1,
+	Args: []ToolArg{
+		{Name: "path", Type: ArgString, Description: "Spill file path from the truncation marker.", Required: true},
+		{Name: "offset", Type: ArgInt, Description: "Byte offset to start reading from. Default 0.", Required: false},
+		{Name: "length", Type: ArgInt, Description: "Number of bytes to read. Default 8192, max 32768.", Required: false},
+	},
+	Execute: func(args map[string]any) string {
+		path := String(args, "path")
+		if path == "" {
+			return "Error: path is required"
+		}
+		clean := filepath.Clean(path)
+		tmp := filepath.Clean(os.TempDir())
+		// Reject traversal: must live in tmp dir, must have apexclaw- prefix.
+		if filepath.Dir(clean) != tmp || !strings.HasPrefix(filepath.Base(clean), "apexclaw-") {
+			return "Error: invalid spill path (must be in temp dir with apexclaw- prefix)"
+		}
+		offset := IntOr(args, "offset", 0)
+		if offset < 0 {
+			offset = 0
+		}
+		length := IntOr(args, "length", 8192)
+		if length <= 0 {
+			length = 8192
+		}
+		if length > 32768 {
+			length = 32768
+		}
+		f, err := os.Open(clean)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		defer f.Close()
+		buf := make([]byte, length)
+		n, _ := f.ReadAt(buf, int64(offset))
+		return fmt.Sprintf("bytes %d-%d:\n%s", offset, offset+n, buf[:n])
 	},
 }

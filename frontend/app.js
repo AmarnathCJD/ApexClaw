@@ -199,12 +199,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 'DEFAULT_MODEL': 'Default AI Model',
                 'MAX_ITERATIONS': 'Max Agent Iterations',
                 'DNS': 'Custom DNS Server',
-                'ZAI_TOKEN': 'ZAI Token',
                 'EMAIL_ADDRESS': 'Gmail Address',
                 'EMAIL_PASSWORD': 'Gmail App Password'
             };
 
-            const secretFields = new Set(['TELEGRAM_API_HASH', 'TELEGRAM_BOT_TOKEN', 'WEB_LOGIN_CODE', 'ZAI_TOKEN', 'EMAIL_PASSWORD']);
+            const secretFields = new Set(['TELEGRAM_API_HASH', 'TELEGRAM_BOT_TOKEN', 'WEB_LOGIN_CODE', 'EMAIL_PASSWORD']);
 
             Object.keys(data).forEach(key => {
                 const group = document.createElement('div');

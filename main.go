@@ -4,17 +4,12 @@ import (
 	"log"
 
 	"apexclaw/core"
-	"apexclaw/model"
 	"apexclaw/server"
-	"apexclaw/tools"
 )
 
 func main() {
-	model.StartVersionUpdater()
 	core.RegisterBuiltinTools(core.GlobalRegistry)
 	core.StartConfigWatcher()
-	tools.StartMonitor()
-	tools.InitMemory()
 	log.Printf("[TOOLS] loaded: %d", len(core.GlobalRegistry.List()))
 
 	go func() {

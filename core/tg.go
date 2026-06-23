@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -71,27 +72,185 @@ func TGSendPhoto(peer string, pathOrFileID, caption string) string {
 	return ""
 }
 
-// TGSendMessage sends a text message to a Telegram chat
-func TGSendMessage(peer string, text string, replyToID string) string {
+// TGSendMessage sends a text message to a Telegram chat with native support
+// for quoted replies, silent send, scheduled send, self-destruct (via
+// client-side timer), post-send reaction, and forwarding.
+func TGSendMessage(
+	peer string,
+	text string,
+	replyToID int32,
+	replyQuote string,
+	silent bool,
+	scheduleAt string,
+	selfDestructSeconds int,
+	reactEmoji string,
+	forwardFrom string,
+	forwardMsgIDs []int32,
+) string {
 	if heartbeatTGClient == nil {
 		return "Error: Telegram client not ready"
 	}
-
 	resolvedPeer, err := TGResolvePeer(peer)
 	if err != nil {
 		return fmt.Sprintf("Error resolving peer: %v", err)
 	}
 
-	opts := &telegram.SendOptions{ParseMode: telegram.HTML}
-	if replyToID != "" {
-		var msgID int32
-		if _, err := fmt.Sscanf(replyToID, "%d", &msgID); err == nil && msgID > 0 {
-			opts.ReplyID = msgID
+	var scheduleUnix int32
+	if scheduleAt != "" {
+		t, err := time.Parse(time.RFC3339, scheduleAt)
+		if err != nil {
+			return fmt.Sprintf("Error parsing schedule_at: %v", err)
+		}
+		scheduleUnix = int32(t.Unix())
+	}
+
+	var sentMsgID int32
+
+	if forwardFrom != "" && len(forwardMsgIDs) > 0 {
+		fromID, err := TGResolvePeer(forwardFrom)
+		if err != nil {
+			return fmt.Sprintf("Error resolving forward_from: %v", err)
+		}
+		msgs, err := heartbeatTGClient.Forward(resolvedPeer, fromID, forwardMsgIDs, &telegram.ForwardOptions{
+			Silent:       silent,
+			ScheduleDate: scheduleUnix,
+		})
+		if err != nil {
+			return fmt.Sprintf("Error forwarding: %v", err)
+		}
+		if len(msgs) > 0 {
+			sentMsgID = msgs[0].ID
+		}
+	} else {
+		opts := &telegram.SendOptions{
+			ParseMode:    telegram.HTML,
+			Silent:       silent,
+			ScheduleDate: scheduleUnix,
+		}
+		if replyToID > 0 {
+			if replyQuote != "" {
+				opts.ReplyTo = &telegram.InputReplyToMessage{
+					ReplyToMsgID: replyToID,
+					QuoteText:    replyQuote,
+				}
+			} else {
+				opts.ReplyID = replyToID
+			}
+		}
+		msg, err := heartbeatTGClient.SendMessage(resolvedPeer, text, opts)
+		if err != nil {
+			return fmt.Sprintf("Error sending message: %v", err)
+		}
+		if msg != nil {
+			sentMsgID = msg.ID
 		}
 	}
 
-	if _, err := heartbeatTGClient.SendMessage(resolvedPeer, text, opts); err != nil {
-		return fmt.Sprintf("Error sending message: %v", err)
+	if reactEmoji != "" && replyToID > 0 {
+		go func() {
+			heartbeatTGClient.SendReaction(resolvedPeer, replyToID, reactEmoji)
+		}()
+	}
+
+	if selfDestructSeconds > 0 && sentMsgID > 0 {
+		fireDelay := time.Duration(selfDestructSeconds) * time.Second
+		if scheduleUnix > 0 {
+			until := time.Until(time.Unix(int64(scheduleUnix), 0))
+			if until > 0 {
+				fireDelay = until + time.Duration(selfDestructSeconds)*time.Second
+			}
+		}
+		msgID := sentMsgID
+		time.AfterFunc(fireDelay, func() {
+			if heartbeatTGClient == nil {
+				return
+			}
+			heartbeatTGClient.DeleteMessages(resolvedPeer, []int32{msgID})
+		})
+	}
+
+	return ""
+}
+
+// richBlockSpec is a wire-format block used by the tg_send_rich tool.
+type richBlockSpec struct {
+	Type   string          `json:"type"`
+	Text   string          `json:"text,omitempty"`
+	Title  string          `json:"title,omitempty"`
+	Open   bool            `json:"open,omitempty"`
+	Header bool            `json:"header,omitempty"`
+	Rows   [][]string      `json:"rows,omitempty"`
+	Blocks []richBlockSpec `json:"blocks,omitempty"`
+}
+
+func buildPageBlocks(specs []richBlockSpec) []telegram.PageBlock {
+	out := make([]telegram.PageBlock, 0, len(specs))
+	for _, s := range specs {
+		switch strings.ToLower(s.Type) {
+		case "p", "paragraph", "":
+			out = append(out, &telegram.PageBlockParagraph{Text: &telegram.TextPlain{Text: s.Text}})
+		case "quote":
+			out = append(out, &telegram.PageBlockPullquote{Text: &telegram.TextPlain{Text: s.Text}, Caption: &telegram.TextEmpty{}})
+		case "divider":
+			out = append(out, &telegram.PageBlockDivider{})
+		case "details", "collapse", "spoiler":
+			title := s.Title
+			if title == "" {
+				title = "Tap to expand"
+			}
+			out = append(out, &telegram.PageBlockDetails{
+				Open:   s.Open,
+				Title:  &telegram.TextPlain{Text: title},
+				Blocks: buildPageBlocks(s.Blocks),
+			})
+		case "table":
+			rows := make([]*telegram.PageTableRow, 0, len(s.Rows))
+			for i, row := range s.Rows {
+				cells := make([]*telegram.PageTableCell, 0, len(row))
+				header := s.Header && i == 0
+				for _, cell := range row {
+					cells = append(cells, &telegram.PageTableCell{Header: header, Text: &telegram.TextPlain{Text: cell}})
+				}
+				rows = append(rows, &telegram.PageTableRow{Cells: cells})
+			}
+			out = append(out, &telegram.PageBlockTable{
+				Bordered: true,
+				Striped:  true,
+				Title:    &telegram.TextEmpty{},
+				Rows:     rows,
+			})
+		}
+	}
+	return out
+}
+
+// TGSendRich sends a rich-page message (paragraphs, collapsibles, tables, quotes) to a chat.
+func TGSendRich(peer string, blocksJSON string) string {
+	if heartbeatTGClient == nil {
+		return "Error: Telegram client not ready"
+	}
+	resolvedPeer, err := TGResolvePeer(peer)
+	if err != nil {
+		return fmt.Sprintf("Error resolving peer: %v", err)
+	}
+
+	var specs []richBlockSpec
+	trimmed := strings.TrimSpace(blocksJSON)
+	if trimmed == "" {
+		return "Error: blocks JSON is required"
+	}
+	if err := json.Unmarshal([]byte(trimmed), &specs); err != nil {
+		return fmt.Sprintf("Error parsing blocks JSON: %v", err)
+	}
+	if len(specs) == 0 {
+		return "Error: blocks JSON is empty"
+	}
+
+	pageBlocks := buildPageBlocks(specs)
+	rich := telegram.NewRichMessage().Blocks(pageBlocks...)
+
+	if _, err := heartbeatTGClient.SendRich(resolvedPeer, rich); err != nil {
+		return fmt.Sprintf("Error sending rich message: %v", err)
 	}
 	return ""
 }

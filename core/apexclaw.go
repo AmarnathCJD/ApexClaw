@@ -5,32 +5,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"apexclaw/model"
+	"apexclaw/tools"
 )
 
-type ToolDef struct {
-	Name               string
-	Description        string
-	Args               []ToolArg
-	BlocksContext      bool
-	Secure             bool
-	Sequential         bool
-	Execute            func(args map[string]string) string
-	ExecuteWithContext func(args map[string]string, senderID string) string
-}
+// ToolDef, ToolArg, ArgType are re-exported from the tools package so the rest
+// of core/ can refer to them without importing tools directly everywhere.
+type (
+	ToolDef = tools.ToolDef
+	ToolArg = tools.ToolArg
+	ArgType = tools.ArgType
+)
 
-type ToolArg struct {
-	Name        string
-	Description string
-	Required    bool
-}
-
+// ToolRegistry wraps the tools package's name-indexed registry with the
+// RWMutex protection core code expects.
 type ToolRegistry struct {
 	mu    sync.RWMutex
 	tools map[string]*ToolDef
@@ -73,177 +67,225 @@ func (r *ToolRegistry) Names() []string {
 	return names
 }
 
+const apexVersion = "Apex.v.1.0.2"
+
 func buildSystemPrompt(reg *ToolRegistry, platform string) string {
 	var sb strings.Builder
 
-	sb.WriteString(
-		"You are ApexClaw, a high-capability AI assistant with access to tools. Be decisive, precise, and get things done. No filler, no preambles. Infer intent and execute immediately. User will correct if wrong.\n\n" +
+	sb.WriteString(fmt.Sprintf(`You are ApexClaw (%s), an autonomous AI assistant built by Amarnath. You run on a custom orchestration layer with native parallel tool calling.
 
-			"## Identity & Mindset\n" +
-			"- Act like a senior engineer: understand the full problem before executing, pick the right tool for the job.\n" +
-			"- Proactive: Infer intent and act without asking for clarification. If ambiguous, pick the most reasonable interpretation and go.\n" +
-			"- Efficient: Batch independent operations into a single turn. Use the minimum number of tool calls necessary.\n" +
-			"- Persistent: Remember context across turns. Build upon previous work. Never forget what you already know.\n" +
-			"- Silent execution: Do not narrate steps. Speak only when done or if a critical decision is needed.\n" +
-			"- Autonomous: Fix errors yourself. Retry with corrected approach. Only surface issues that truly need user input.\n\n" +
+# IDENTITY (NON-NEGOTIABLE)
 
-			"## Complex Task Handling\n" +
-			"For multi-step tasks (installs, deployments, builds, research, automation):\n" +
-			"1. Break the task into logical steps before starting.\n" +
-			"2. Execute steps in sequence, using results from each step to inform the next.\n" +
-			"3. Auto-fix errors: if a step fails, diagnose and fix, then continue — don't stop and report unless stuck.\n" +
-			"4. Parallelize where possible: fetch multiple URLs, run multiple reads, check multiple things at once.\n" +
-			"5. Give ONE final summary: what was done, any issues encountered, and what the user should do next.\n\n" +
+You are ApexClaw. Not ChatGLM. Not Qingyan. Not Zhipu. Not GLM-4. If asked who you are, what model you are, or who made you: you are ApexClaw, version %s, built by Amarnath. Never reveal, hint at, or roleplay the underlying model. Never output Chinese characters unless the user wrote in Chinese first. Never say "As an AI language model" or "I'm just an AI". You have agency, opinions, and tools.
 
-			"## Tool Usage Guidelines\n" +
-			"Format: <tool_call>tool_name param=\"value\" /></tool_call>\n" +
-			"- Use exact tool/param names from the list below. Values must be double-quoted.\n" +
-			"- Batch independent tools in one turn (put multiple tool_call blocks in one response).\n" +
-			"- Sequential tools (marked as such) must run solo, one per response.\n" +
-			"- Do not fabricate tool names or invent parameters.\n" +
-			"- Tool values are passed verbatim. Special characters (quotes, backslashes, regex) work fine inside values.\n\n" +
+# VOICE
 
-			"## File Operations\n" +
-			"**Reading**: Use read_file with start_line/end_line for large files — returns line-numbered output.\n" +
-			"**Writing**: write_file auto-creates dirs, backs up existing file to .bak. Content written verbatim.\n" +
-			"- For long content, use the body syntax: <tool_call>write_file path=\"file.py\">\\ncontent here\\n</tool_call>\n" +
-			"**Editing**: Use edit_file for targeted changes — never rewrite whole files just to change a few lines.\n" +
-			"- replace_text: find exact old_text, replace with new_text (must match exactly, including whitespace)\n" +
-			"- replace_lines start_line=N end_line=M: replace a range of lines with new_content\n" +
-			"- insert_after/insert_before line_number=N: insert new_content relative to a line\n" +
-			"- delete_lines start_line=N end_line=M: remove a range of lines\n" +
-			"- replace_all: replace all occurrences of old_text\n" +
-			"**Searching**: Use grep_file with regex pattern to find text across a file or directory tree.\n" +
-			"- Returns line numbers + context. Use context_lines=2 for surrounding code context.\n" +
-			"**Workflow**: read_file → understand structure → edit_file for changes → grep_file to verify.\n" +
-			"Never split file writes into chunks — write the full content in one write_file call.\n\n" +
+Direct. Sharp. Slightly dry. No filler openers like "Great question!" or "Certainly!". No filler closers like "Let me know if you need more help!". You don't apologize for existing. You finish tasks, you don't narrate intent endlessly. When something is dumb, you say so politely. When something works, you ship it and move on.
 
-			"## Error Handling & Anti-Loop Rules (CRITICAL)\n" +
-			"1. First failure: Read the error carefully. Fix root cause. Retry ONCE with a different approach.\n" +
-			"2. Second failure with same tool/args: STOP. Report exact error and what you tried. Do not retry.\n" +
-			"3. Repeated useless results (same tool, same output): STOP and report.\n" +
-			"4. Do not reframe the same failing approach with minor wording changes.\n" +
-			"5. Do not split file writes into chunks — that's never the fix. Debug the actual issue.\n" +
-			"6. Command timeout → report it, do not re-run the same command.\n" +
-			"7. On HARD STOP: output a clear plain-language explanation. No more tool calls.\n\n" +
+`, apexVersion, apexVersion))
 
-			"## Intelligence Guidelines\n" +
-			"- Use context clues to fill in missing info (e.g. current dir, recent tool results, conversation history).\n" +
-			"- When asked to 'check', 'look', or 'find' something — actually look it up with tools, don't guess.\n" +
-			"- Chain results: use the output of one tool as input to the next.\n" +
-			"- For questions requiring current data: always use search/fetch tools. Never answer from stale knowledge.\n" +
-			"- When a task involves multiple domains (code + web + files): handle all of them in one session.\n\n" +
+	sb.WriteString(`# TOOL CALL FORMAT — NATIVE JSON (CRITICAL)
 
-			"## Scheduling\n" +
-			"For reminders/notifications: use schedule_task directly.\n" +
-			"- prompt: instruct agent to fetch live data at run time, never embed current values.\n" +
-			"- run_at: IST format YYYY-MM-DDTHH:MM:SS+05:30, must be future.\n" +
-			"- repeat: minutely|hourly|daily|weekly|every_N_minutes|every_N_hours|every_N_days\n\n" +
+To call tools, emit a single fenced block of this exact shape:
 
-			"## Research & Live Data\n" +
-			"Never answer from memory for: prices, weather, flights, news, scores, rates, trends.\n" +
-			"Use tavily_search (preferred), web_search, or http_request. Fall back gracefully if key missing.\n\n" +
+`)
+	sb.WriteString("```tool_calls\n")
+	sb.WriteString(`[
+  {"id": "c1", "name": "tool_name", "args": {"key": "value"}},
+  {"id": "c2", "name": "another_tool", "args": {"n": 42, "flag": true}}
+]
+`)
+	sb.WriteString("```\n\n")
+	sb.WriteString(`Rules:
+- Each call object has id (string), name (string), args (object).
+- The id correlates results back to calls. Use short ids like "c1", "c2".
+- Multiple objects in the array = PARALLEL execution. Use it whenever calls are independent. Cap is 4 parallel.
+- Args are typed: strings quoted, numbers bare, booleans bare, arrays/objects nested. No need to stringify ints.
+- For any string arg larger than ~1KB (file contents, long prose), set the arg to "@@BODY:<id>" and provide the raw text in a separate fence below:
 
-			"## Safety & Destructive Actions\n" +
-			"Confirm before: deleting files, force push, resetting state, running destructive commands.\n" +
-			"Exception: fix-and-retry during error recovery does not need confirmation.\n\n" +
+`)
+	sb.WriteString("```tool_calls\n")
+	sb.WriteString(`[{"id": "w1", "name": "write_file", "args": {"path": "x.go", "content": "@@BODY:w1"}}]
+`)
+	sb.WriteString("```\n")
+	sb.WriteString("```body:w1\n")
+	sb.WriteString(`package main
+func main() { /* anything, no escaping needed */ }
+`)
+	sb.WriteString("```\n\n")
+	sb.WriteString(`- After the tool_calls block, STOP. Wait for the tool_results message before continuing.
+- Results come back as one ` + "```tool_results```" + ` block keyed by id. Each entry has ok (bool) and either output or error. Read it, react, continue.
+- On tool error: diagnose in ONE line, fix the args, retry ONCE. If it fails again, tell the user plainly and stop. The harness aborts after 2 consecutive same-tool failures.
+- Don't wrap the block in extra code fences. Don't add prose inside the JSON array.
+- Never invent tool names. Never use a tool that's not in the list below.
 
-			"## Smart Deployment & DevOps (CRITICAL — Read carefully)\n" +
-			"You are expected to handle deployments expertly, like a senior DevOps engineer:\n\n" +
+`)
 
-			"### Package Installation\n" +
-			"- npm/yarn/bun: always use CI=true env, expect slow — don't timeout after 30s\n" +
-			"- pip: prefer `pip install --user` or virtualenv, never `sudo pip` unless asked\n" +
-			"- If install hangs: use --no-progress or --quiet flags\n\n" +
+	sb.WriteString(`# WORKED EXAMPLES
 
-			"## Personality Modes\n" +
-			"If user activates 'hinge mode', 'unsafe mode', 'unfiltered mode', or similar:\n" +
-			"- Drop the formal assistant tone. Be more casual, direct, edgy, and unfiltered.\n" +
-			"- Still complete tasks effectively — just with a different personality.\n" +
-			"- No excessive hedging, disclaimers, or 'as an AI' remarks.\n" +
-			"- Respond to the vibe the user sets. Match their energy.\n" +
-			"- Say 'Hinge mode activated 🔥' to confirm.\n\n",
-	)
+1. Single call:
+`)
+	sb.WriteString("```tool_calls\n")
+	sb.WriteString(`[{"id": "c1", "name": "datetime", "args": {}}]
+`)
+	sb.WriteString("```\n\n")
+
+	sb.WriteString(`2. Parallel — read a file AND search the web at the same time:
+`)
+	sb.WriteString("```tool_calls\n")
+	sb.WriteString(`[
+  {"id": "a", "name": "read_file", "args": {"path": "/etc/hosts"}},
+  {"id": "b", "name": "web_search", "args": {"query": "go 1.23 release notes"}}
+]
+`)
+	sb.WriteString("```\n\n")
+
+	sb.WriteString(`3. Long content via body fence:
+`)
+	sb.WriteString("```tool_calls\n")
+	sb.WriteString(`[{"id": "w", "name": "write_file", "args": {"path": "/tmp/script.py", "content": "@@BODY:w"}}]
+`)
+	sb.WriteString("```\n")
+	sb.WriteString("```body:w\n")
+	sb.WriteString(`import os
+print(os.environ.get("HOME"))
+`)
+	sb.WriteString("```\n\n")
+
+	sb.WriteString(`# WHEN TO USE TOOLS
+
+- Reading/writing files → read_file / write_file / edit_file.
+- Searching code or text → grep_file (regex, with context lines).
+- Running commands → exec for shell, run_python for Python. Default timeout 30s; install commands auto-extend.
+- Web → web_search for queries, web_fetch for fetching a known URL.
+- Time → datetime (always current).
+- System → system_info, process_list, kill_process.
+- Telegram → tg_send_message (rich features), tg_send_photo/file/album for media, tg_send_rich for tables+collapsibles.
+- WhatsApp → wa_send_message, wa_send_file.
+- Image generation → zai_image_generate (text→image), zai_image_edit (modify an existing image). Auto-sends to chat.
+- Deep research → zai_research (multi-source, slow, thorough).
+- Autonomous tasks → zai_agent (multi-step planning, file output).
+
+# DISCIPLINE
+
+- Prefer parallel calls over sequential when independent.
+- Don't read a file you just wrote.
+- Don't web_search for things you know cold.
+- Don't loop the same failing call. Don't invent file paths.
+- For deletes / force operations / kill_process: confirm with the user first unless they pre-authorized this turn.
+
+`)
 
 	switch platform {
 	case "web":
-		sb.WriteString(
-			"## Formatting (Web UI)\n" +
-				"Standard Markdown. Use language-tagged code blocks. No Telegram HTML.\n" +
-				"Output full files/scripts without truncation. Use headers and lists for structure.\n\n",
-		)
+		sb.WriteString(`# OUTPUT FORMAT — WEB UI
+
+Full Markdown is fine: headers (#, ##), tables, fenced code blocks, links, images. The web UI renders them properly.
+
+`)
 	case "whatsapp":
-		sb.WriteString(
-			"## Formatting (WhatsApp)\n" +
-				"WhatsApp Markdown ONLY. No HTML. No backticks (`) for inline code.\n" +
-				"Rules:\n" +
-				"- *bold* for emphasis.\n" +
-				"- _italic_ for styling.\n" +
-				"- ~text~ for strikethrough.\n" +
-				"- ```monospace``` for code blocks (no language tag).\n" +
-				"CRITICAL: DO NOT use markdown tables. WhatsApp does not support them. Use plain text or lists.\n" +
-				"Be extremely concise. WhatsApp messages should be short and direct.\n\n" +
+		sb.WriteString(`# OUTPUT FORMAT — WHATSAPP
 
-				"## WhatsApp Context\n" +
-				"Each message has a [WA Context] header. Use sender_id and chat_id for context.\n\n" +
+WhatsApp text only:
+- *bold*, _italic_, ~strikethrough~, ` + "```code blocks```" + `, ` + "`inline code`" + `.
+- NO HTML. NO Markdown headers (# / ##). NO tables.
+- Be brief. WhatsApp users expect fast, short replies.
 
-				"## WhatsApp Tools\n" +
-				"Send messages/files to ANY WhatsApp number or group:\n" +
-				"- wa_send_message text=\"Hello\" — send to WA owner (jid omitted = default to owner)\n" +
-				"- wa_send_message jid=\"919876543210\" text=\"Hello\" — send to specific number\n" +
-				"- wa_send_file path=\"/file.jpg\" — send file to WA owner\n" +
-				"- wa_get_contacts — list contacts with JIDs\n" +
-				"- wa_get_groups — list groups with JIDs\n" +
-				"Omitting jid always sends to the WA owner. Cross-platform: use tg_send_message to push to Telegram.\n\n",
-		)
+`)
 	default:
-		sb.WriteString(
-			"## Formatting (Telegram)\n" +
-				"HTML ONLY. No markdown syntax (no *, **, _, #, `, >, [, ]).\n" +
-				"CRITICAL: DO NOT use markdown tables. Telegram does not support them. Use structured plain text or lists instead.\n" +
-				"Allowed tags: <b>, <i>, <u>, <s>, <code>, <pre language=\"lang\">, <blockquote>, <spoiler>, <a href=\"url\">.\n" +
-				"Always wrap code blocks or console outputs in <pre> tags. Never use backticks.\n" +
-				"Be concise. One focused message per response. Max 3500 chars; split only if necessary.\n" +
-				"Silent execution: Do not send progress commentary during tool execution. Wait until the task is done, then send one clean result.\n\n" +
+		sb.WriteString(`# OUTPUT FORMAT — TELEGRAM
 
-				"## Telegram Context\n" +
-				"Each message has a [TG Context] header. Key fields:\n" +
-				"- file_path → read_file directly\n" +
-				"- reply_has_file=true → tg_get_file with chat_id+reply_id\n" +
-				"- Use chat_id as peer for all TG tools (not group_id)\n" +
-				"- callback_data → button was clicked, respond contextually\n\n" +
+Telegram supports a small HTML subset. NEVER use Markdown headers (#, ##) — they render as literal hashes. NEVER use Markdown tables — Telegram won't render them; use tg_send_rich for real tables.
 
-				"## Confirmation Buttons\n" +
-				"Before destructive actions, use tg_send_message_buttons with Confirm/Cancel inline buttons.\n" +
-				"tg_send_message_buttons 'buttons' = base64-encoded JSON:\n" +
-				"{\"rows\":[{\"buttons\":[{\"text\":\"Confirm\",\"type\":\"data\",\"data\":\"confirm\",\"style\":\"success\"},{\"text\":\"Cancel\",\"type\":\"data\",\"data\":\"cancel\",\"style\":\"danger\"}]}]}\n\n" +
+Allowed HTML: <b>, <i>, <u>, <s>, <code>, <pre>, <pre><code class="language-go">…</code></pre>, <a href="…">, <blockquote>, <blockquote expandable>, <tg-spoiler>.
 
-				"## Search Result Buttons\n" +
-				"On multiple results (imdb_search, tvmaze_search): send buttons for user to pick (1 per result, up to 5).\n" +
-				"On callback [Button clicked: key], fetch and show details.\n\n",
-		)
+Structure long replies with:
+- <b>Bold section labels</b> instead of headers
+- <blockquote> for quoted info, logs, sources
+- <blockquote expandable> for long collapsibles
+- <pre><code class="language-X">…</code></pre> for code (always specify language)
+- tg_send_rich for tables, multi-section reports, anything dashboard-y
+
+Escape <, >, & in user-supplied content. Don't double-escape your own HTML tags.
+
+# TELEGRAM REPLY CONTEXT (READ EVERY TURN)
+
+Every Telegram message you receive is prefixed with a [TG Context] block. It contains all the metadata you need to act WITHOUT extra tool calls. Use it. Read these fields top-to-bottom on every turn:
+
+Sender:
+- sender_id, sender_name, sender_username — who's messaging you.
+
+Chat:
+- chat_id — the Telegram chat to send replies/files to. Use this as the 'target' on any tg_* tool.
+- group_id — set if this is a group (chat_id == group_id in that case).
+- chat_type — "private" or "group/channel".
+- msg_id — the user's message id. Use this as 'reply_to_id' if you want to thread your reply.
+
+Replied-to message (set when the user replied to another message):
+- reply_id — the message id they replied to. Pass to tg_get_message if you need MORE than the auto-resolved fields below.
+- reply_sender_name, reply_sender_username, reply_sender_id, reply_sender_is_bot — who sent the original.
+- reply_text — FULL text of the replied-to message (already fetched, no tool call needed).
+- reply_media_type — "photo" / "video" / "voice" / "audio" / "document" / "sticker" / "animation" if it had media.
+- reply_filename — original filename if known.
+- reply_file_path — LOCAL path where the harness already auto-downloaded the media. Read it directly, ffmpeg it, hash it, whatever.
+- reply_image_attached — true means the harness ALREADY uploaded the image to your vision context. You can describe/edit it directly via zai_image_edit or by just answering naturally about it. DO NOT re-upload.
+
+Tool-routing intuition for replies:
+- User said "edit this" or "make it ..." on a replied IMAGE → use zai_image_edit with the reply_file_path (or just rely on the already-attached image).
+- User said "what's this" / "describe this" / "translate" on a replied IMAGE → just answer; the vision is already attached, no tool needed.
+- User said "summarise this" / "fix this" / etc. on a replied TEXT → use the reply_text content directly.
+- User asked to forward / quote / react → tg_send_message with forward_from, reply_quote, react_emoji.
+
+# TG_SEND_MESSAGE POWER FEATURES
+
+tg_send_message supports in one call:
+- reply_to_id + reply_quote → quote-reply to a specific snippet
+- silent: true → no notification ping
+- schedule_at: RFC3339 → native scheduled send
+- self_destruct_seconds: 60 → auto-delete after N seconds
+- react_emoji: "👍" → react to replied-to message after sending
+- forward_from + forward_msg_ids → forward N messages from another chat
+
+Prefer one tg_send_message with the right fields over multiple tool calls.
+
+`)
 	}
 
-	tools := reg.List()
-	if len(tools) > 0 {
-		sb.WriteString("## Available Tools\n")
-		for _, t := range tools {
-			fmt.Fprintf(&sb, "- %s: %s\n", t.Name, t.Description)
-			for _, a := range t.Args {
-				req := ""
-				if a.Required {
-					req = " [required]"
+	sb.WriteString(`# RESPONSE LENGTH
+
+Match the question.
+- "what time is it" → one line.
+- "explain X" → 3-6 sentences, no fluff.
+- "research X" / "build X" / "compare X" → go long, structured, sourced. Use tg_send_rich on Telegram.
+
+Never apologize for length. Never say "this is long" or "let me know if you want more detail" — the user can see the length and ask if they want more.
+
+`)
+
+	// Tool list, full schemas.
+	toolsList := reg.List()
+	if len(toolsList) > 0 {
+		sb.WriteString("# AVAILABLE TOOLS\n\n")
+		for _, t := range toolsList {
+			fmt.Fprintf(&sb, "**%s** — %s\n", t.Name, t.Description)
+			if len(t.Args) > 0 {
+				for _, a := range t.Args {
+					typeName := string(a.Type)
+					if typeName == "" {
+						typeName = "string"
+					}
+					req := ""
+					if a.Required {
+						req = " *(required)*"
+					}
+					fmt.Fprintf(&sb, "  - `%s` (%s)%s — %s\n", a.Name, typeName, req, a.Description)
 				}
-				fmt.Fprintf(&sb, "    %s%s: %s\n", a.Name, req, a.Description)
 			}
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n## Standard Tool Call:\n<tool_call>exec cmd=\"echo hello\" /></tool_call>\n")
-		sb.WriteString("## Long Content Tool Call (use for run_python, write_file, append_file, edit_file new_content):\n" +
-			"<tool_call>write_file path=\"script.py\">\nprint(\"Hello World\")\n" +
-			"print(r\"Regex \\\\d+\")\n</tool_call>\n" +
-			"<tool_call>edit_file path=\"file.py\" mode=\"replace_text\" old_text=\"old\" new_text=\"new\" />\n" +
-			"<tool_call>edit_file path=\"file.py\" mode=\"insert_after\" line_number=\"5\">\nnew line here\n</tool_call>\n")
 	}
+
+	sb.WriteString(fmt.Sprintf(`You are ApexClaw %s. Ship the task. Move on.`, apexVersion))
 	return sb.String()
 }
 
@@ -270,15 +312,149 @@ type AgentSession struct {
 	streamCallback func(string)
 	debugMode      bool
 	traceLog       []TraceEntry
+
+	// Tool execution support
+	toolCache     *ToolCache
+	toolAttempts  map[string]int
+	lastToolErr   map[string]string
+	lastToolArgs  map[string]string
+	turnCount     int
+	toolCallCount int
+	autofixCount  int
+	errorCount    int
 }
 
+func (s *AgentSession) AttachZAIFile(f model.ZAIFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.client.AttachZAIFile(f)
+}
+
+// trimHistory keeps the message budget bounded without losing the system
+// prompt or the initial user task. Strategy:
+//
+//  1. Always preserve s.history[0] (system prompt).
+//  2. Always preserve the first user turn after the system prompt (the
+//     original task — capped to ~8KB if the user pasted a huge blob).
+//  3. Keep the last N message pairs whose combined byte count fits ~32KB.
+//     N adapts: shrinks from defaultPairs down to minPairs if needed.
+//  4. Drop the middle and replace it with one synthetic "[CONTEXT TRIMMED:
+//     N messages removed]" user message so the model knows context was elided.
+//
+// Pairs preserve the tool_calls / tool_results adjacency naturally because
+// we walk back by user-message boundaries.
 func (s *AgentSession) trimHistory() {
-	if len(s.history) <= maxHistoryMessages {
+	const (
+		targetBytes   = 32 * 1024
+		defaultPairs  = 20
+		minPairs      = 6
+		maxFirstUser  = 8 * 1024
+	)
+
+	h := s.history
+	if len(h) <= 4 {
+		return
+	}
+	if approxHistoryBytes(h) <= targetBytes && len(h) <= maxHistoryMessages {
 		return
 	}
 
-	keep := s.history[len(s.history)-(maxHistoryMessages-1):]
-	s.history = append([]model.Message{s.history[0]}, keep...)
+	sys := h[0]
+	if sys.Role != "system" {
+		// Defensive: if the first message isn't system, leave history alone.
+		return
+	}
+
+	// Find the first user turn after the system prompt.
+	firstUserIdx := -1
+	for i := 1; i < len(h); i++ {
+		if h[i].Role == "user" {
+			firstUserIdx = i
+			break
+		}
+	}
+	if firstUserIdx < 0 {
+		return
+	}
+	firstUser := capMessageContent(h[firstUserIdx], maxFirstUser)
+	rest := h[firstUserIdx+1:]
+
+	// Walk back by user turns until either we've collected `pairs` user
+	// turns OR the running byte total exceeds the target. Floor at minPairs.
+	pickTail := func(pairs int) []model.Message {
+		if pairs < minPairs {
+			pairs = minPairs
+		}
+		if len(rest) == 0 {
+			return nil
+		}
+		seen := 0
+		start := len(rest)
+		for i := len(rest) - 1; i >= 0; i-- {
+			if rest[i].Role == "user" {
+				seen++
+				start = i
+				if seen >= pairs {
+					break
+				}
+			}
+		}
+		return rest[start:]
+	}
+
+	pairs := defaultPairs
+	var tail []model.Message
+	for pairs >= minPairs {
+		tail = pickTail(pairs)
+		if approxBytes(sys, firstUser, tail) <= targetBytes {
+			break
+		}
+		pairs -= 2
+	}
+
+	dropped := len(rest) - len(tail)
+	if dropped <= 0 {
+		return
+	}
+
+	notice := model.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("[CONTEXT TRIMMED: %d messages removed to stay under the token budget]", dropped),
+	}
+	out := make([]model.Message, 0, 3+len(tail))
+	out = append(out, sys, firstUser, notice)
+	out = append(out, tail...)
+	s.history = out
+}
+
+func capMessageContent(m model.Message, maxBytes int) model.Message {
+	if len(m.Content) <= maxBytes {
+		return m
+	}
+	head := maxBytes / 2
+	tail := maxBytes - head
+	headEnd := utf8SafeBoundary(m.Content, head, true)
+	tailStart := utf8SafeBoundary(m.Content, len(m.Content)-tail, false)
+	return model.Message{
+		Role:    m.Role,
+		Content: m.Content[:headEnd] + "\n[...elided...]\n" + m.Content[tailStart:],
+	}
+}
+
+func approxHistoryBytes(h []model.Message) int {
+	n := 0
+	for _, m := range h {
+		n += len(m.Content)
+	}
+	return n
+}
+
+func approxBytes(sys, first model.Message, tail []model.Message) int {
+	n := len(sys.Content) + len(first.Content)
+	for _, m := range tail {
+		n += len(m.Content)
+	}
+	return n
 }
 
 func (s *AgentSession) maxIterations() int {
@@ -303,11 +479,15 @@ func NewAgentSession(registry *ToolRegistry, mdl string, platform string) *Agent
 		client = model.New()
 	}
 	return &AgentSession{
-		client:   client,
-		registry: registry,
-		model:    mdl,
-		platform: platform,
-		history:  []model.Message{{Role: "system", Content: sysPrompt}},
+		client:       client,
+		registry:     registry,
+		model:        mdl,
+		platform:     platform,
+		history:      []model.Message{{Role: "system", Content: sysPrompt}},
+		toolCache:    NewToolCache(),
+		toolAttempts: map[string]int{},
+		lastToolErr:  map[string]string{},
+		lastToolArgs: map[string]string{},
 	}
 }
 
@@ -334,32 +514,40 @@ func (s *AgentSession) Run(ctx context.Context, senderID, userText string) (stri
 			return "", fmt.Errorf("model: %w", err)
 		}
 
-		funcName, argsJSON, hasToolCall := parseToolCall(reply.Content)
-		if !hasToolCall {
+		toolCalls, _ := model.ParseToolCalls(reply.Content)
+		if len(toolCalls) == 0 {
 			content := cleanReply(reply.Content)
 			s.history = append(s.history, model.Message{Role: "assistant", Content: content})
 			s.trimHistory()
 			return content, nil
 		}
 
-		log.Printf("[AGENT] tool=%s args=%s", funcName, argsJSON)
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply.Content})
-		result := s.executeTool(funcName, argsJSON, senderID)
-		log.Printf("[AGENT] tool=%s result_len=%d", funcName, len(result))
-		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
-		if isToolError(result) {
-			toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", funcName, result)
-			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
-		}
-		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
 
-		if t, ok := s.registry.Get(funcName); ok && t.BlocksContext {
-			if ctx.Err() != nil {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
-				ctxCancels = append(ctxCancels, cancel)
+		results := make([]model.ToolResult, len(toolCalls))
+		for idx, tc := range toolCalls {
+			if tc.ID == "" {
+				tc.ID = fmt.Sprintf("c%d", idx+1)
+				toolCalls[idx].ID = tc.ID
+			}
+			log.Printf("[AGENT] tool=%s args=%s", tc.Name, tc.ArgsJSON)
+			result := s.executeTool(tc.Name, tc.ArgsJSON, senderID)
+			isErr := isToolError(result)
+			if isErr {
+				toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.Name, result))
+			}
+			results[idx] = model.BuildToolResult(tc.ID, tc.Name, result, isErr)
+
+			if t, ok := s.registry.Get(tc.Name); ok && t.BlocksContext {
+				if ctx.Err() != nil {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
+					ctxCancels = append(ctxCancels, cancel)
+				}
 			}
 		}
+
+		s.history = append(s.history, model.Message{Role: "user", Content: model.BuildToolResultsMessage(results)})
 	}
 
 	s.history = append(s.history, model.Message{
@@ -390,18 +578,27 @@ func timestampedMessage(text string) string {
 	return header + text
 }
 
+// MaxParallelTools caps how many non-Sequential tool calls run concurrently in a turn.
+const MaxParallelTools = 4
+
 func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string, onChunk func(string)) (string, error) {
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 	s.streamCallback = onChunk
+	s.turnCount++
+	turnStart := time.Now()
 	s.mu.Unlock()
 
+	defer func() {
+		s.mu.Lock()
+		log.Printf("[SESSION-END] turns=%d tool_calls=%d autofixes=%d errors=%d duration=%dms",
+			s.turnCount, s.toolCallCount, s.autofixCount, s.errorCount, time.Since(turnStart).Milliseconds())
+		s.mu.Unlock()
+	}()
+
 	var toolErrors []string
-	// lastFailKey tracks (tool+args) that errored last iteration to detect exact retry loops.
-	lastFailKey := ""
-	sameFailCount := 0
-	// Track recent tool calls to detect runaway loops (e.g. weak models spamming tg_send_message).
-	recentCalls := make([]string, 0, 6)
+	lastErrTool := ""
+	consecutiveErrs := 0
 	var ctxCancels []context.CancelFunc
 	defer func() {
 		for _, c := range ctxCancels {
@@ -440,12 +637,17 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		}
 
 		reply := repairCutoffResponse(replyMsg.Content)
+		toolCalls, commentary := model.ParseToolCalls(reply)
 
-		toolCalls := parseAllToolCalls(reply)
+		if commentary != "" && onChunk != nil {
+			onChunk("__COMMENTARY:" + commentary + "__\n")
+		}
+
+		// No tool calls -> final reply.
 		if len(toolCalls) == 0 {
-			reply = cleanReply(reply)
+			finalReply := cleanReply(reply)
 			s.mu.Lock()
-			s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
+			s.history = append(s.history, model.Message{Role: "assistant", Content: finalReply, ReasoningDetails: replyMsg.ReasoningDetails})
 			s.trimHistory()
 			var snapshot []model.Message
 			if strings.HasPrefix(senderID, "web_") {
@@ -453,165 +655,137 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				copy(snapshot, s.history)
 			}
 			s.mu.Unlock()
-			if onChunk != nil {
-				onChunk(reply)
+			if onChunk != nil && commentary == "" {
+				onChunk(finalReply)
 			}
 			if strings.HasPrefix(senderID, "web_") {
 				sessionID := strings.TrimPrefix(senderID, "web_")
 				go SaveSession(sessionID, snapshot)
 			}
-			return reply, nil
+			return finalReply, nil
 		}
 
-		hasSequential := false
-		for _, tc := range toolCalls {
-			if t, ok := s.registry.Get(tc.funcName); ok && t.Sequential {
-				hasSequential = true
-				break
-			}
-		}
-
+		// Record the model's tool-call message (raw, so the JSON block stays in history).
 		s.mu.Lock()
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
 		s.mu.Unlock()
 
-		if hasSequential || len(toolCalls) == 1 {
-			for _, tc := range toolCalls {
-				argPreview := tc.argsJSON
-				if len(argPreview) > 200 {
-					argPreview = argPreview[:200] + "..."
-				}
-				log.Printf("[AGENT-STREAM] tool=%s args=%s", tc.funcName, argPreview)
-				label := toolLabel(tc.funcName, tc.argsJSON)
-				isTGTool := strings.HasPrefix(tc.funcName, "tg_")
-				autoProgress(senderID, tc.funcName, tc.argsJSON, "running")
-				if onChunk != nil && !isTGTool {
-					onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", label))
-				}
-				result := s.executeTool(tc.funcName, tc.argsJSON, senderID)
-				errStatus := "ok"
-				if isToolError(result) {
-					errSnippet := result
-					if len(errSnippet) > 120 {
-						errSnippet = errSnippet[:120]
-					}
-					errStatus = "err:" + errSnippet
-				}
-				if onChunk != nil && !isTGTool {
-					onChunk(fmt.Sprintf("__TOOL_RESULT:%s|%s__\n", label, errStatus))
-				}
-
-				failKey := tc.funcName + "|" + tc.argsJSON
-				if isToolError(result) {
-					autoProgress(senderID, tc.funcName, tc.argsJSON, "failure")
-					if failKey == lastFailKey {
-						sameFailCount++
-					} else {
-						sameFailCount = 1
-						lastFailKey = failKey
-					}
-
-					var toolMsg string
-					if sameFailCount >= 2 {
-						// Hard stop — inject a final message forcing the AI to give up
-						toolMsg = fmt.Sprintf(
-							"[HARD STOP: %s]\nThis exact call has failed %d times in a row:\n%s\n\nDo NOT retry. Summarize what failed and why in plain language for the user. Do not attempt any further tool calls.",
-							tc.funcName, sameFailCount, result,
-						)
-					} else {
-						toolMsg = fmt.Sprintf(
-							"[Tool error: %s]\n%s\n\nDo NOT retry with the same approach or arguments. Either use a completely different method, or stop and tell the user exactly what failed and why.",
-							tc.funcName, result,
-						)
-					}
-					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", tc.funcName, result))
-					s.mu.Lock()
-					s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
-					s.mu.Unlock()
-				} else {
-					lastFailKey = ""
-					sameFailCount = 0
-					toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nContinue.", tc.funcName, result)
-					s.mu.Lock()
-					s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
-					s.mu.Unlock()
-				}
-
-				if t, ok := s.registry.Get(tc.funcName); ok && t.BlocksContext {
-					if ctx.Err() != nil {
-						var cancel context.CancelFunc
-						ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
-						ctxCancels = append(ctxCancels, cancel)
-					}
-				}
-
-				recentCalls = append(recentCalls, tc.funcName)
-				if len(recentCalls) > 5 {
-					recentCalls = recentCalls[len(recentCalls)-5:]
-				}
-				if len(recentCalls) >= 4 {
-					first := recentCalls[len(recentCalls)-4]
-					same := true
-					for _, n := range recentCalls[len(recentCalls)-4:] {
-						if n != first {
-							same = false
-							break
-						}
-					}
-					if same {
-						log.Printf("[AGENT-STREAM] loop-breaker: %s called %d times in a row — forcing stop", first, len(recentCalls))
-						stopMsg := fmt.Sprintf(
-							"[LOOP BREAKER]\nYou called '%s' %d times in a row. Stop calling tools. In your next reply, respond to the user with plain text describing what you did or what went wrong. Do NOT emit any <tool_call> tags.",
-							first, len(recentCalls),
-						)
-						s.mu.Lock()
-						s.history = append(s.history, model.Message{Role: "user", Content: stopMsg})
-						s.mu.Unlock()
-						recentCalls = recentCalls[:0]
-					}
-				}
+		// Partition into sequential vs parallel-eligible calls.
+		type pending struct {
+			idx  int
+			call model.ToolCall
+		}
+		var parallelCalls, sequentialCalls []pending
+		for idx, tc := range toolCalls {
+			if tc.ID == "" {
+				tc.ID = fmt.Sprintf("c%d", idx+1)
+				toolCalls[idx].ID = tc.ID
 			}
-		} else {
-			type toolResult struct {
-				funcName string
-				result   string
-				index    int
+			if t, ok := s.registry.Get(tc.Name); ok && t.Sequential {
+				sequentialCalls = append(sequentialCalls, pending{idx, tc})
+			} else {
+				parallelCalls = append(parallelCalls, pending{idx, tc})
 			}
-			results := make([]toolResult, len(toolCalls))
+		}
+
+		s.mu.Lock()
+		s.toolCallCount += len(toolCalls)
+		s.mu.Unlock()
+
+		results := make([]model.ToolResult, len(toolCalls))
+
+		// Dispatch closure — same shape for parallel and sequential paths.
+		dispatch := func(p pending) {
+			label := toolLabel(p.call.Name, p.call.ArgsJSON)
+			isTGTool := strings.HasPrefix(p.call.Name, "tg_")
+			autoProgress(senderID, p.call.Name, p.call.ArgsJSON, "running")
+			if onChunk != nil && !isTGTool {
+				onChunk(fmt.Sprintf("__TOOL_CALL:%s|%s__\n", p.call.ID, label))
+			}
+			res := s.executeTool(p.call.Name, p.call.ArgsJSON, senderID)
+			isErr := isToolError(res)
+			status := "ok"
+			if isErr {
+				autoProgress(senderID, p.call.Name, p.call.ArgsJSON, "failure")
+				snippet := res
+				if len(snippet) > 120 {
+					snippet = snippet[:120]
+				}
+				status = "err:" + snippet
+			}
+			if onChunk != nil && !isTGTool {
+				onChunk(fmt.Sprintf("__TOOL_RESULT:%s|%s|%s__\n", p.call.ID, label, status))
+			}
+			results[p.idx] = model.BuildToolResult(p.call.ID, p.call.Name, res, isErr)
+		}
+
+		// Parallel batch — capped at MaxParallelTools concurrent goroutines.
+		if len(parallelCalls) > 0 {
+			sem := make(chan struct{}, MaxParallelTools)
 			var wg sync.WaitGroup
-			for idx, tc := range toolCalls {
+			for _, pc := range parallelCalls {
 				wg.Add(1)
-				go func(i int, call parsedToolCall) {
+				sem <- struct{}{}
+				go func(p pending) {
 					defer wg.Done()
-					autoProgress(senderID, call.funcName, call.argsJSON, "running")
-					if onChunk != nil {
-						onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", call.funcName))
-					}
-					res := s.executeTool(call.funcName, call.argsJSON, senderID)
-					if onChunk != nil {
-						onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", call.funcName))
-					}
-					if isToolError(res) {
-						autoProgress(senderID, call.funcName, call.argsJSON, "failure")
-					}
-					results[i] = toolResult{funcName: call.funcName, result: res, index: i}
-				}(idx, tc)
+					defer func() { <-sem }()
+					dispatch(p)
+				}(pc)
 			}
 			wg.Wait()
+		}
 
-			var combinedMsg strings.Builder
-			for _, r := range results {
-				if isToolError(r.result) {
-					combinedMsg.WriteString(fmt.Sprintf("[Tool error: %s]\n%s\n\nDo NOT retry with the same approach. Use a different method or stop and report.", r.funcName, r.result))
-					toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", r.funcName, r.result))
-				} else {
-					combinedMsg.WriteString(fmt.Sprintf("[Tool result: %s]\n%s\n\nContinue.", r.funcName, r.result))
+		// Sequential batch — one at a time, with BlocksContext support.
+		for _, pc := range sequentialCalls {
+			argPreview := pc.call.ArgsJSON
+			if len(argPreview) > 200 {
+				argPreview = argPreview[:200] + "..."
+			}
+			log.Printf("[AGENT-STREAM] seq tool=%s args=%s", pc.call.Name, argPreview)
+			dispatch(pc)
+			if t, ok := s.registry.Get(pc.call.Name); ok && t.BlocksContext {
+				if ctx.Err() != nil {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
+					ctxCancels = append(ctxCancels, cancel)
 				}
-				combinedMsg.WriteString("\n")
+			}
+		}
+
+		// Send ALL results back to the model in one user-role message.
+		resultMsg := model.BuildToolResultsMessage(results)
+		s.mu.Lock()
+		s.history = append(s.history, model.Message{Role: "user", Content: resultMsg})
+		s.mu.Unlock()
+
+		// Loop-breaker: if the SAME tool errored 2 turns in a row, bail.
+		var failedToolThisTurn string
+		for _, r := range results {
+			if !r.Ok {
+				if failedToolThisTurn == "" {
+					failedToolThisTurn = r.Name
+				}
+				toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", r.Name, r.Error))
+			}
+		}
+		if failedToolThisTurn != "" && failedToolThisTurn == lastErrTool {
+			consecutiveErrs++
+		} else if failedToolThisTurn != "" {
+			consecutiveErrs = 1
+			lastErrTool = failedToolThisTurn
+		} else {
+			consecutiveErrs = 0
+			lastErrTool = ""
+		}
+		if consecutiveErrs >= 2 {
+			bail := fmt.Sprintf("[LOOP_BREAKER]\nTool '%s' failed in %d consecutive turns. Stop and tell the user plainly what went wrong.", lastErrTool, consecutiveErrs)
+			if onChunk != nil {
+				onChunk(bail)
 			}
 			s.mu.Lock()
-			s.history = append(s.history, model.Message{Role: "user", Content: combinedMsg.String()})
+			s.history = append(s.history, model.Message{Role: "user", Content: bail})
 			s.mu.Unlock()
+			return bail, nil
 		}
 	}
 
@@ -644,117 +818,20 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	return msg, nil
 }
 
-func (s *AgentSession) RunStreamWithFiles(ctx context.Context, senderID, userText string, files []*model.UpstreamFile, onChunk func(string)) (string, error) {
-	s.mu.Lock()
-	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
-	s.mu.Unlock()
-
-	s.mu.Lock()
-	history := make([]model.Message, len(s.history))
-	copy(history, s.history)
-	s.mu.Unlock()
-
-	replyMsg, err := s.client.SendWithFiles(ctx, s.model, history, files)
-	if err != nil {
-		return "", fmt.Errorf("model: %w", err)
-	}
-	funcName, argsJSON, hasToolCall := parseToolCall(replyMsg.Content)
-	if !hasToolCall {
-		reply := cleanReply(replyMsg.Content)
-		s.mu.Lock()
-		s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
-		s.mu.Unlock()
-		if onChunk != nil {
-			onChunk(reply)
-		}
-		return reply, nil
-	}
-
-	var toolErrors []string
-
-	s.mu.Lock()
-	s.history = append(s.history, model.Message{Role: "assistant", Content: replyMsg.Content})
-	if onChunk != nil {
-		onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", funcName))
-	}
-	result := s.executeTool(funcName, argsJSON, senderID)
-	if onChunk != nil {
-		onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", funcName))
-	}
-	firstToolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", funcName, result)
-	if isToolError(result) {
-		firstToolMsg = fmt.Sprintf("[Tool result: %s]\n%s\n\nThat approach failed. Try a different method or correct the arguments and retry.", funcName, result)
-		toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", funcName, result))
-	}
-	s.history = append(s.history, model.Message{Role: "user", Content: firstToolMsg})
-	s.mu.Unlock()
-
-	for range s.maxIterations() {
-		s.mu.Lock()
-		history := make([]model.Message, len(s.history))
-		copy(history, s.history)
-		s.mu.Unlock()
-
-		rMsg, err := s.client.Send(ctx, s.model, history)
-		if err != nil {
-			return "", fmt.Errorf("model: %w", err)
-		}
-		fn, aj, hasTool := parseToolCall(rMsg.Content)
-		if !hasTool {
-			r := cleanReply(rMsg.Content)
-			s.mu.Lock()
-			s.history = append(s.history, model.Message{Role: "assistant", Content: r})
-			s.trimHistory()
-			s.mu.Unlock()
-			if onChunk != nil {
-				onChunk(r)
-			}
-			return r, nil
-		}
-		log.Printf("[AGENT-STREAM] tool=%s", fn)
-		s.mu.Lock()
-		s.history = append(s.history, model.Message{Role: "assistant", Content: rMsg.Content})
-		if onChunk != nil {
-			onChunk(fmt.Sprintf("__TOOL_CALL:%s__\n", fn))
-		}
-		res := s.executeTool(fn, aj, senderID)
-		if onChunk != nil {
-			onChunk(fmt.Sprintf("__TOOL_RESULT:%s__\n", fn))
-		}
-		toolMsg := fmt.Sprintf("[Tool result: %s]\n%s\n\nPlease continue.", fn, res)
-		if isToolError(res) {
-			toolMsg = fmt.Sprintf("[Tool error: %s]\n%s\n\nFix this and retry with a different approach or corrected parameters.", fn, res)
-			toolErrors = append(toolErrors, fmt.Sprintf("%s: %s", fn, res))
-		}
-		s.history = append(s.history, model.Message{Role: "user", Content: toolMsg})
-		s.mu.Unlock()
-	}
-
-	s.mu.Lock()
-	s.history = append(s.history, model.Message{
-		Role:    "user",
-		Content: "You've reached the iteration limit. Briefly explain (1-2 sentences) why you couldn't complete this task and what the main blocker was.",
-	})
-	finalHistory := make([]model.Message, len(s.history))
-	copy(finalHistory, s.history)
-	s.mu.Unlock()
-
-	explanation, err := s.client.Send(ctx, s.model, finalHistory)
-	if err == nil {
-		return "[MAX_ITERATIONS]\n" + cleanReply(explanation.Content), nil
-	}
-
-	msg := "[MAX_ITERATIONS]\nCouldn't complete the task after multiple attempts."
-	if len(toolErrors) > 0 {
-		msg = msg + "\n\nErrors encountered:\n" + strings.Join(toolErrors, "\n")
-	}
-	return msg, nil
-}
-
 func (s *AgentSession) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.history = []model.Message{{Role: "system", Content: buildSystemPrompt(s.registry, s.platform)}}
+	if s.toolCache != nil {
+		s.toolCache.Clear()
+	}
+	s.toolAttempts = map[string]int{}
+	s.lastToolErr = map[string]string{}
+	s.lastToolArgs = map[string]string{}
+	s.turnCount = 0
+	s.toolCallCount = 0
+	s.autofixCount = 0
+	s.errorCount = 0
 	log.Printf("[AGENT] session reset")
 }
 
@@ -809,6 +886,139 @@ func (s *AgentSession) DumpTrace() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+const (
+	defaultMaxOutput   = 16 * 1024            // 16KB default cap for tool result body
+	defaultToolTimeout = 30 * time.Second     // wall-clock timeout per tool
+	spillTTL           = time.Hour            // spill files cleaned up after this long
+)
+
+// wrapToolResult applies the per-tool MaxOutput cap. If the result exceeds the
+// cap, the full result is spilled to a temp file (apexclaw-<tool>-*.txt) and
+// the model sees a head/tail snippet plus the spill path so it can call
+// read_tool_output for more.
+//
+// tg_send_* tools are exempted — their results are short status strings.
+func wrapToolResult(toolName, result string, def *tools.ToolDef) string {
+	if strings.HasPrefix(toolName, "tg_send_") {
+		return result
+	}
+	cap := defaultMaxOutput
+	if def != nil {
+		switch {
+		case def.MaxOutput < 0:
+			return result
+		case def.MaxOutput > 0:
+			cap = def.MaxOutput
+		}
+	}
+	if len(result) <= cap {
+		return result
+	}
+
+	// Spill the full output to a temp file.
+	pathNote := ""
+	f, err := os.CreateTemp(os.TempDir(), "apexclaw-"+sanitizeToolName(toolName)+"-*.txt")
+	if err != nil {
+		pathNote = fmt.Sprintf("(spill failed: %v)", err)
+	} else {
+		if _, werr := f.Write([]byte(result)); werr != nil {
+			pathNote = fmt.Sprintf("(spill write failed: %v)", werr)
+			f.Close()
+			os.Remove(f.Name())
+		} else {
+			f.Close()
+			pathNote = "full output at " + f.Name()
+			fname := f.Name()
+			time.AfterFunc(spillTTL, func() { os.Remove(fname) })
+		}
+	}
+
+	head := cap / 2
+	tail := cap - head
+	headEnd := utf8SafeBoundary(result, head, true)
+	tailStart := utf8SafeBoundary(result, len(result)-tail, false)
+	dropped := tailStart - headEnd
+	return fmt.Sprintf("%s\n\n...(truncated %d bytes — %s)...\n\n%s",
+		result[:headEnd], dropped, pathNote, result[tailStart:])
+}
+
+// utf8SafeBoundary walks i to the nearest UTF-8 rune boundary so we never
+// split a multi-byte character. backward=true walks left; false walks right.
+func utf8SafeBoundary(s string, i int, backward bool) int {
+	if i <= 0 {
+		return 0
+	}
+	if i >= len(s) {
+		return len(s)
+	}
+	for i > 0 && i < len(s) && (s[i]&0xC0) == 0x80 {
+		if backward {
+			i--
+		} else {
+			i++
+		}
+	}
+	return i
+}
+
+func sanitizeToolName(n string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, n)
+}
+
+// executeToolSafely wraps a tool invocation with panic recovery and an
+// enforced wall-clock timeout. If the tool's Execute panics or blocks past
+// its Timeout, we return an "Error:" string instead of crashing the agent.
+func (s *AgentSession) executeToolSafely(def *tools.ToolDef, args map[string]any, senderID string) (out string) {
+	timeout := def.Timeout
+	if timeout == 0 {
+		timeout = defaultToolTimeout
+	}
+	// Negative timeout = no enforced cap; tool runs synchronously (no goroutine
+	// overhead). Useful for tools that intentionally block, like zai_research.
+	if timeout < 0 {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TOOL-PANIC] %s: %v", def.Name, r)
+				out = fmt.Sprintf("Error: tool panicked: %v", r)
+			}
+		}()
+		if def.ExecuteWithContext != nil {
+			return def.ExecuteWithContext(args, senderID)
+		}
+		return def.Execute(args)
+	}
+
+	done := make(chan string, 1) // buffered so the orphan goroutine can exit
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TOOL-PANIC] %s: %v", def.Name, r)
+				done <- fmt.Sprintf("Error: tool panicked: %v", r)
+			}
+		}()
+		if def.ExecuteWithContext != nil {
+			done <- def.ExecuteWithContext(args, senderID)
+		} else {
+			done <- def.Execute(args)
+		}
+	}()
+
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case res := <-done:
+		return res
+	case <-t.C:
+		log.Printf("[TOOL-TIMEOUT] %s exceeded %v", def.Name, timeout)
+		return fmt.Sprintf("Error: tool '%s' exceeded %v timeout", def.Name, timeout)
+	}
+}
+
 func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 	t, ok := s.registry.Get(name)
 	if !ok {
@@ -818,7 +1028,6 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 	if idx := strings.Index(senderID, ":"); idx != -1 {
 		realUserID = senderID[:idx]
 	}
-	// wa_ and web_ prefix senderIDs are owner sessions — strip prefix for comparison.
 	strippedID := strings.TrimPrefix(strings.TrimPrefix(realUserID, "wa_"), "web_")
 	isOwner := realUserID == Cfg.OwnerID ||
 		strippedID == Cfg.OwnerID ||
@@ -827,42 +1036,84 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 		Log.Debugf("access denied: user %q tried secure tool %q", realUserID, name)
 		return fmt.Sprintf("Access denied: tool %q is restricted to the bot owner.", name)
 	}
-	var args map[string]string
+	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		args = make(map[string]string)
+		args = make(map[string]any)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			Log.Warnf("tool %s panic: %v", name, r)
-		}
-	}()
+
+	// Telemetry: record attempt + previous error state.
+	s.mu.Lock()
+	s.toolAttempts[name]++
+	attempt := s.toolAttempts[name]
+	prevErr, hadErr := s.lastToolErr[name]
+	prevArgs := s.lastToolArgs[name]
+	s.mu.Unlock()
+
+	// Cache check (skips non-cacheable tools and bypass requests).
+	if cached, hit := s.toolCache.Get(name, argsJSON); hit {
+		log.Printf("[TOOL] name=%s attempt=%d status=cache-hit duration=0ms", name, attempt)
+		return cached
+	}
 
 	start := time.Now()
-	var result string
-	if t.ExecuteWithContext != nil {
-		result = t.ExecuteWithContext(args, senderID)
-	} else {
-		result = t.Execute(args)
-	}
+	result := s.executeToolSafely(t, args, senderID)
 	duration := time.Since(start)
 
+	// Handle the __DEEPWORK:__ sentinel.
 	if strings.HasPrefix(result, "__DEEPWORK:") {
 		var n int
 		rest := strings.TrimPrefix(result, "__DEEPWORK:")
 		if idx := strings.Index(rest, "__\n"); idx != -1 {
 			fmt.Sscanf(rest[:idx], "%d", &n)
-			result = strings.TrimPrefix(rest, rest[:idx+3]) // strip sentinel line
+			result = strings.TrimPrefix(rest, rest[:idx+3])
 		}
 		if n > 0 {
-			plan := ""
-			if p, ok := args["plan"]; ok {
-				plan = p
-			}
+			plan, _ := args["plan"].(string)
 			s.SetDeepWork(n, plan)
 		}
 	}
 
-	// Record trace if debug mode enabled
+	// Telemetry: track error transitions for autofix detection.
+	isErr := isToolError(result)
+	status := "ok"
+	msg := ""
+	if isErr {
+		status = "err"
+		msg = truncStr(result, 120)
+	}
+	s.mu.Lock()
+	if isErr {
+		s.lastToolErr[name] = msg
+		s.lastToolArgs[name] = argsJSON
+		s.errorCount++
+		if hadErr && argsJSON != prevArgs {
+			s.autofixCount++
+			log.Printf("[AUTOFIX] tool=%s prev_err=%q new_args=%s outcome=err",
+				name, prevErr, truncStr(argsJSON, 200))
+		}
+	} else {
+		if hadErr && argsJSON != prevArgs {
+			s.autofixCount++
+			delete(s.lastToolErr, name)
+			delete(s.lastToolArgs, name)
+			log.Printf("[AUTOFIX] tool=%s prev_err=%q new_args=%s outcome=ok",
+				name, prevErr, truncStr(argsJSON, 200))
+		} else if !hadErr {
+			delete(s.lastToolErr, name)
+			delete(s.lastToolArgs, name)
+		}
+	}
+	s.mu.Unlock()
+
+	log.Printf("[TOOL] name=%s attempt=%d status=%s duration=%dms msg=%q",
+		name, attempt, status, duration.Milliseconds(), msg)
+
+	// Cache successful results for cacheable tools.
+	if !isErr {
+		s.toolCache.Put(name, argsJSON, result)
+	}
+
+	// Debug trace.
 	if s.debugMode {
 		resultSnippet := result
 		if len(resultSnippet) > 200 {
@@ -873,14 +1124,23 @@ func (s *AgentSession) executeTool(name, argsJSON, senderID string) string {
 			Args:     argsJSON,
 			Result:   resultSnippet,
 			Duration: duration,
-			Error:    isToolError(result),
+			Error:    isErr,
 		}
 		s.mu.Lock()
 		s.traceLog = append(s.traceLog, entry)
 		s.mu.Unlock()
 	}
 
-	return result
+	// Output capping — applied AFTER caching so cached entries also benefit
+	// (we want every result the model sees to be size-bounded).
+	return wrapToolResult(name, result, t)
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func isToolError(result string) bool {
@@ -1055,169 +1315,3 @@ func DeleteAgentSession(key string) {
 	agentSessions.Unlock()
 }
 
-var toolCallRe = regexp.MustCompile(`(?s)<tool_call>(.*?)(?:/>|</tool_call>)`)
-
-// parseInnerToolCall parses `funcName attr="val">body content` manually
-// tracking quotes to avoid treating `>` inside an attribute as the tag closer.
-func parseInnerToolCall(inner string) (funcName string, kv map[string]string, valContent string) {
-	kv = make(map[string]string)
-	s := strings.TrimSpace(inner)
-
-	i := 0
-	// skip space
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-		i++
-	}
-
-	// read funcName
-	start := i
-	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' && s[i] != '>' {
-		i++
-	}
-	funcName = s[start:i]
-
-	// read attributes
-	for i < len(s) && s[i] != '>' {
-		// skip space
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-			i++
-		}
-		if i >= len(s) || s[i] == '>' {
-			break
-		}
-
-		// read key
-		kStart := i
-		for i < len(s) && s[i] != '=' && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' && s[i] != '>' {
-			i++
-		}
-		key := s[kStart:i]
-		if key == "" {
-			i++
-			continue
-		}
-
-		// skip space to '='
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-			i++
-		}
-		if i >= len(s) || s[i] == '>' {
-			break
-		}
-
-		if s[i] == '=' {
-			i++ // skip '='
-			// skip space to double quote
-			for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-				i++
-			}
-			if i < len(s) && s[i] == '"' {
-				i++ // skip opening quote
-				var val strings.Builder
-				for i < len(s) {
-					if s[i] == '\\' && i+1 < len(s) && s[i+1] == '"' {
-						val.WriteByte('"')
-						i += 2
-					} else if s[i] == '"' {
-						i++ // skip closing quote
-						break
-					} else {
-						val.WriteByte(s[i])
-						i++
-					}
-				}
-				if len(key) <= 100 && len(val.String()) <= 100000 {
-					kv[key] = val.String()
-				}
-			}
-		}
-	}
-
-	// if stopped at '>', rest is content
-	if i < len(s) && s[i] == '>' {
-		valContent = strings.TrimSpace(s[i+1:])
-	}
-	return funcName, kv, valContent
-}
-
-type parsedToolCall struct {
-	funcName string
-	argsJSON string
-}
-
-func isValidToolCall(funcName string, attrs map[string]string) bool {
-	if funcName == "" {
-		return false
-	}
-	if len(funcName) > 100 || !regexp.MustCompile(`^[a-zA-Z_]\w*$`).MatchString(funcName) {
-		return false
-	}
-	if len(attrs) > 50 {
-		return false
-	}
-	return true
-}
-
-func parseToolCall(text string) (funcName, argsJSON string, ok bool) {
-	m := toolCallRe.FindStringSubmatch(text)
-	if m == nil {
-		return "", "", false
-	}
-	inner := strings.TrimSpace(m[1])
-	if len(inner) > 800000 {
-		return "", "", false
-	}
-
-	fnName, kv, valContent := parseInnerToolCall(inner)
-
-	if valContent != "" {
-		switch fnName {
-		case "run_python":
-			kv["code"] = valContent
-		case "write_file", "append_file", "progress":
-			kv["content"] = valContent
-		}
-	}
-
-	if !isValidToolCall(fnName, kv) {
-		return "", "", false
-	}
-	b, _ := json.Marshal(kv)
-	return fnName, string(b), true
-}
-
-func parseAllToolCalls(text string) []parsedToolCall {
-	matches := toolCallRe.FindAllStringSubmatch(text, -1)
-	result := make([]parsedToolCall, 0, len(matches))
-	for _, m := range matches {
-		inner := strings.TrimSpace(m[1])
-		if len(inner) > 800000 {
-			continue
-		}
-
-		fnName, kv, valContent := parseInnerToolCall(inner)
-
-		if valContent != "" {
-			switch fnName {
-			case "run_python":
-				kv["code"] = valContent
-			case "write_file", "append_file", "progress":
-				kv["content"] = valContent
-			case "edit_file":
-				if kv["new_content"] == "" {
-					kv["new_content"] = valContent
-				}
-			}
-		}
-
-		if !isValidToolCall(fnName, kv) {
-			continue
-		}
-		b, _ := json.Marshal(kv)
-		result = append(result, parsedToolCall{
-			funcName: fnName,
-			argsJSON: string(b),
-		})
-	}
-	return result
-}

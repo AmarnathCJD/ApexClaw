@@ -13,7 +13,7 @@ var SystemInfo = &ToolDef{
 	Name:        "system_info",
 	Description: "Get system information: OS, CPU cores, Go runtime memory stats, and (Windows) RAM usage",
 	Args:        []ToolArg{},
-	Execute: func(args map[string]string) string {
+	Execute: func(args map[string]any) string {
 		var sb strings.Builder
 		sb.WriteString("System Information\n")
 		sb.WriteString(strings.Repeat("─", 36) + "\n")
@@ -69,10 +69,10 @@ var ProcessList = &ToolDef{
 	Description: "List running processes with their PID and memory usage (sudo only)",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "filter", Description: "Optional name filter to search for specific processes (case-insensitive)", Required: false},
+		{Name: "filter", Type: ArgString, Description: "Optional name filter to search for specific processes (case-insensitive)", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		filter := strings.ToLower(strings.TrimSpace(args["filter"]))
+	Execute: func(args map[string]any) string {
+		filter := strings.ToLower(String(args, "filter"))
 
 		var out []byte
 		var err error
@@ -116,26 +116,31 @@ var KillProcess = &ToolDef{
 	Description: "Kill a running process by PID or name (sudo only)",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "pid", Description: "Process ID to kill", Required: false},
-		{Name: "name", Description: "Process name to kill (e.g. 'notepad.exe')", Required: false},
+		{Name: "pid", Type: ArgInt, Description: "Process ID to kill", Required: false},
+		{Name: "name", Type: ArgString, Description: "Process name to kill (e.g. 'notepad.exe')", Required: false},
 	},
-	Execute: func(args map[string]string) string {
-		pid := strings.TrimSpace(args["pid"])
-		name := strings.TrimSpace(args["name"])
-		if pid == "" && name == "" {
+	Execute: func(args map[string]any) string {
+		pid, hasPid := Int(args, "pid")
+		name := String(args, "name")
+		if !hasPid && name == "" {
 			return "Error: pid or name is required"
+		}
+
+		pidStr := ""
+		if hasPid {
+			pidStr = fmt.Sprintf("%d", pid)
 		}
 
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			if pid != "" {
-				cmd = exec.Command("taskkill", "/F", "/PID", pid)
+			if hasPid {
+				cmd = exec.Command("taskkill", "/F", "/PID", pidStr)
 			} else {
 				cmd = exec.Command("taskkill", "/F", "/IM", name)
 			}
 		} else {
-			if pid != "" {
-				cmd = exec.Command("kill", "-9", pid)
+			if hasPid {
+				cmd = exec.Command("kill", "-9", pidStr)
 			} else {
 				cmd = exec.Command("pkill", "-9", name)
 			}
@@ -152,71 +157,10 @@ var KillProcess = &ToolDef{
 		if result != "" {
 			return result
 		}
-		if pid != "" {
-			return fmt.Sprintf("Process %s killed successfully", pid)
+		if hasPid {
+			return fmt.Sprintf("Process %s killed successfully", pidStr)
 		}
 		return fmt.Sprintf("Process '%s' killed successfully", name)
-	},
-}
-
-var ClipboardGet = &ToolDef{
-	Name:        "clipboard_get",
-	Description: "Read the current clipboard contents (sudo only)",
-	Secure:      true,
-	Args:        []ToolArg{},
-	Execute: func(args map[string]string) string {
-		var out []byte
-		var err error
-		switch runtime.GOOS {
-		case "windows":
-			out, err = exec.Command("powershell", "-NoProfile", "-Command", "Get-Clipboard").Output()
-		case "darwin":
-			out, err = exec.Command("pbpaste").Output()
-		default:
-			out, err = exec.Command("xclip", "-selection", "clipboard", "-o").Output()
-		}
-		if err != nil {
-			return fmt.Sprintf("Error reading clipboard: %v", err)
-		}
-		text := strings.TrimRight(string(out), "\r\n")
-		if text == "" {
-			return "Clipboard is empty"
-		}
-		if len(text) > 2000 {
-			return text[:2000] + "\n...(truncated)"
-		}
-		return text
-	},
-}
-
-var ClipboardSet = &ToolDef{
-	Name:        "clipboard_set",
-	Description: "Copy text to the clipboard (sudo only)",
-	Secure:      true,
-	Args: []ToolArg{
-		{Name: "text", Description: "Text to copy to clipboard", Required: true},
-	},
-	Execute: func(args map[string]string) string {
-		text := args["text"]
-		if text == "" {
-			return "Error: text is required"
-		}
-
-		var cmd *exec.Cmd
-		switch runtime.GOOS {
-		case "windows":
-			cmd = exec.Command("clip")
-		case "darwin":
-			cmd = exec.Command("pbcopy")
-		default:
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		}
-		cmd.Stdin = strings.NewReader(text)
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Sprintf("Error setting clipboard: %v", err)
-		}
-		return fmt.Sprintf("Copied %d characters to clipboard", len(text))
 	},
 }
 
@@ -225,7 +169,7 @@ var UpdateClaw = &ToolDef{
 	Description: "Update ApexClaw. Uses git pull/build if in a git repo, otherwise tells you how to update. (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
-	Execute: func(args map[string]string) string {
+	Execute: func(args map[string]any) string {
 		var sb strings.Builder
 		sb.WriteString("Update initiated...\n")
 
@@ -276,7 +220,7 @@ var RestartClaw = &ToolDef{
 	Description: "Restarts the ApexClaw process (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
-	Execute: func(args map[string]string) string {
+	Execute: func(args map[string]any) string {
 		binName := "./apexclaw"
 		if runtime.GOOS == "windows" {
 			binName = "apexclaw.exe"
@@ -308,7 +252,7 @@ var KillClaw = &ToolDef{
 	Description: "Immediately shuts down the ApexClaw process (sudo only)",
 	Secure:      true,
 	Args:        []ToolArg{},
-	Execute: func(args map[string]string) string {
+	Execute: func(args map[string]any) string {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			os.Exit(0)

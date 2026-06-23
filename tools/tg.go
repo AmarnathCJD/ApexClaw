@@ -12,7 +12,18 @@ import (
 // === Function Pointers (wired in core/register.go) ===
 
 var SendTGFileFn func(peer string, filePath, caption string, forceDocument bool) string
-var SendTGMsgFn func(peer string, text string, replyToID string) string
+var SendTGMsgFn func(
+	peer string,
+	text string,
+	replyToID int32,
+	replyQuote string,
+	silent bool,
+	scheduleAt string,
+	selfDestructSeconds int,
+	reactEmoji string,
+	forwardFrom string,
+	forwardMsgIDs []int32,
+) string
 var SendTGPhotoFn func(peer string, pathOrFileID, caption string) string
 var SendTGPhotoURLFn func(peer string, photoURL, caption string) string
 var SendTGAlbumFn func(peer string, paths []string, caption string) string
@@ -30,6 +41,7 @@ var TGBroadcastFn func(peers []string, text string) string
 var TGGetMessageFn func(peer string, msgID int32) string
 var TGEditMessageFn func(peer string, msgID int32, newText string) string
 var SendTGMessageWithButtonsFn func(peer string, text string, kb *telegram.ReplyInlineMarkup) string
+var SendTGRichFn func(peer string, blocksJSON string) string
 var TGCreateInviteFn func(peer string, expireDate int32, memberLimit int32) string
 var TGGetProfilePhotosFn func(peer string, limit int) string
 var TGBanUserFn func(peer string, userID string, deleteHistory bool, untilDate int32) string
@@ -39,6 +51,10 @@ var TGPromoteAdminFn func(peer string, userID string, rights map[string]bool, ti
 var TGDemoteAdminFn func(peer string, userID string) string
 var TGSendLocationFn func(peer string, lat, long float64) string
 var TGGetFileFn func(peer string, msgID int32, savePath string) string
+
+// GetTelegramContextFn returns per-user Telegram context (chat id, sender id,
+// replied-to message id, etc.) — wired in core/register.go.
+var GetTelegramContextFn func(userID string) map[string]any
 
 // === Context Helpers ===
 
@@ -136,30 +152,53 @@ type ButtonsSpec struct {
 
 var TGSendMessage = &ToolDef{
 	Name:        "tg_send_message",
-	Description: "Send a text message to a Telegram chat. Omit target to send to current chat.",
+	Description: "Send a Telegram message. Supports HTML formatting, replies (with quoted snippet), silent send, native scheduled send, client-side self-destruct, post-send reaction, and message forwarding. When forward_from and forward_msg_ids are set, text/reply_to are ignored.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "text", Description: "Message text (HTML formatting allowed)", Required: true},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
-		{Name: "reply_to_id", Description: "Optional message ID to reply to (creates a threaded reply)", Required: false},
+		{Name: "text", Type: ArgString, Description: "Message text (HTML allowed). Ignored when forwarding.", Required: false},
+		{Name: "target", Type: ArgString, Description: "Destination chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "reply_to_id", Type: ArgInt, Description: "Message ID to reply to.", Required: false},
+		{Name: "reply_quote", Type: ArgString, Description: "Snippet to show as native Telegram quoted reply. Requires reply_to_id.", Required: false},
+		{Name: "silent", Type: ArgBool, Description: "Send without notification ping.", Required: false},
+		{Name: "schedule_at", Type: ArgString, Description: "RFC3339 timestamp for native scheduled send (e.g. 2026-12-31T15:04:05Z).", Required: false},
+		{Name: "self_destruct_seconds", Type: ArgInt, Description: "Auto-delete sent message after N seconds.", Required: false},
+		{Name: "react_emoji", Type: ArgString, Description: "Emoji to react with on the replied-to message. Requires reply_to_id.", Required: false},
+		{Name: "forward_from", Type: ArgString, Description: "Source chat to forward from. Ignores text/reply_to_id.", Required: false},
+		{Name: "forward_msg_ids", Type: ArgList, Description: "Message IDs in forward_from to forward (comma-separated or array).", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		text := strings.TrimSpace(args["text"])
-		if text == "" {
-			return "Error: text is required"
-		}
-		target := resolveContextPeer(args["target"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
-		replyToID := strings.TrimSpace(args["reply_to_id"])
 		if SendTGMsgFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		if r := SendTGMsgFn(target, text, replyToID); r != "" {
-			return r
+		text := String(args, "text")
+		replyToID, _ := Int(args, "reply_to_id")
+		replyQuote := String(args, "reply_quote")
+		silent := BoolOr(args, "silent", false)
+		scheduleAt := String(args, "schedule_at")
+		selfDestruct, _ := Int(args, "self_destruct_seconds")
+		reactEmoji := String(args, "react_emoji")
+		forwardFrom := String(args, "forward_from")
+		// forward_msg_ids may come as []any or comma-separated string
+		var fwdIDs []int32
+		for _, n := range IntList(args, "forward_msg_ids") {
+			if n > 0 {
+				fwdIDs = append(fwdIDs, int32(n))
+			}
 		}
-		return "Sent"
+		if forwardFrom == "" && len(fwdIDs) == 0 && text == "" {
+			return "Error: text is required (or use forward_from + forward_msg_ids)"
+		}
+		if replyQuote != "" && replyToID == 0 {
+			return "Error: reply_quote requires reply_to_id"
+		}
+		if reactEmoji != "" && replyToID == 0 {
+			return "Error: react_emoji requires reply_to_id"
+		}
+		return SendTGMsgFn(target, text, int32(replyToID), replyQuote, silent, scheduleAt, selfDestruct, reactEmoji, forwardFrom, fwdIDs)
 	},
 }
 
@@ -170,34 +209,30 @@ var TGSendFile = &ToolDef{
 		"Set doc=true to force document mode regardless of file type. Omit target for current chat.",
 	Secure: true,
 	Args: []ToolArg{
-		{Name: "path", Description: "Absolute path of the file", Required: true},
-		{Name: "caption", Description: "Optional caption", Required: false},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
-		{Name: "doc", Description: "'true' to force send as document. Default: auto by extension.", Required: false},
+		{Name: "path", Type: ArgString, Description: "Absolute path of the file", Required: true},
+		{Name: "caption", Type: ArgString, Description: "Optional caption", Required: false},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "doc", Type: ArgBool, Description: "true to force send as document. Default: auto by extension.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		path := strings.TrimSpace(args["path"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
-		target := resolveContextPeer(args["target"], userID)
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
 		if SendTGFileFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		docStr := strings.ToLower(strings.TrimSpace(args["doc"]))
 		var forceDoc bool
-		switch docStr {
-		case "true":
-			forceDoc = true
-		case "false":
-			forceDoc = false
-		default:
+		if b, ok := Bool(args, "doc"); ok {
+			forceDoc = b
+		} else {
 			forceDoc = !isMediaFile(path)
 		}
-		if r := SendTGFileFn(target, path, strings.TrimSpace(args["caption"]), forceDoc); r != "" {
+		if r := SendTGFileFn(target, path, String(args, "caption"), forceDoc); r != "" {
 			return r
 		}
 		return fmt.Sprintf("Sent: %s", path)
@@ -209,23 +244,23 @@ var TGSendPhoto = &ToolDef{
 	Description: "Send a photo from local path or Telegram FileID. Omit target for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "path", Description: "Local path or Telegram FileID", Required: true},
-		{Name: "caption", Description: "Optional caption", Required: false},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "path", Type: ArgString, Description: "Local path or Telegram FileID", Required: true},
+		{Name: "caption", Type: ArgString, Description: "Optional caption", Required: false},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		path := strings.TrimSpace(args["path"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		path := String(args, "path")
 		if path == "" {
 			return "Error: path is required"
 		}
-		target := resolveContextPeer(args["target"], userID)
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
 		if SendTGPhotoFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		if r := SendTGPhotoFn(target, path, strings.TrimSpace(args["caption"])); r != "" {
+		if r := SendTGPhotoFn(target, path, String(args, "caption")); r != "" {
 			return r
 		}
 		return "Sent photo"
@@ -234,38 +269,39 @@ var TGSendPhoto = &ToolDef{
 
 var TGSendAlbum = &ToolDef{
 	Name:        "tg_send_album",
-	Description: "Send multiple photos/videos as an album (media group). Paths comma-separated. Omit target for current chat.",
+	Description: "Send multiple photos/videos as an album (media group). Paths comma-separated or array. Omit target for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "paths", Description: "Comma-separated list of local file paths or URLs", Required: true},
-		{Name: "caption", Description: "Optional caption for the album", Required: false},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "paths", Type: ArgList, Description: "List of local file paths or URLs (comma-separated or array)", Required: true},
+		{Name: "caption", Type: ArgString, Description: "Optional caption for the album", Required: false},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		pathsStr := strings.TrimSpace(args["paths"])
-		if pathsStr == "" {
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		paths := List(args, "paths")
+		if len(paths) == 0 {
 			return "Error: paths is required"
 		}
-		target := resolveContextPeer(args["target"], userID)
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
 		if SendTGAlbumFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		var paths []string
-		for p := range strings.SplitSeq(pathsStr, ",") {
+		// trim each path
+		cleaned := make([]string, 0, len(paths))
+		for _, p := range paths {
 			if p = strings.TrimSpace(p); p != "" {
-				paths = append(paths, p)
+				cleaned = append(cleaned, p)
 			}
 		}
-		if len(paths) == 0 {
+		if len(cleaned) == 0 {
 			return "Error: no valid paths provided"
 		}
-		if r := SendTGAlbumFn(target, paths, strings.TrimSpace(args["caption"])); r != "" {
+		if r := SendTGAlbumFn(target, cleaned, String(args, "caption")); r != "" {
 			return r
 		}
-		return fmt.Sprintf("Sent album (%d files)", len(paths))
+		return fmt.Sprintf("Sent album (%d files)", len(cleaned))
 	},
 }
 
@@ -274,23 +310,24 @@ var TGSendLocation = &ToolDef{
 	Description: "Send a location pin to a Telegram chat. Omit target for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "lat", Description: "Latitude (e.g. 37.7749)", Required: true},
-		{Name: "long", Description: "Longitude (e.g. -122.4194)", Required: true},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "lat", Type: ArgFloat, Description: "Latitude (e.g. 37.7749)", Required: true},
+		{Name: "long", Type: ArgFloat, Description: "Longitude (e.g. -122.4194)", Required: true},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		target := resolveContextPeer(args["target"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
 		if TGSendLocationFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		var lat, long float64
-		if _, err := fmt.Sscanf(args["lat"], "%f", &lat); err != nil {
+		lat, ok := Float(args, "lat")
+		if !ok {
 			return "Error: invalid lat"
 		}
-		if _, err := fmt.Sscanf(args["long"], "%f", &long); err != nil {
+		long, ok := Float(args, "long")
+		if !ok {
 			return "Error: invalid long"
 		}
 		return TGSendLocationFn(target, lat, long)
@@ -304,16 +341,16 @@ var TGSendMessageWithButtons = &ToolDef{
 		"Styles: success(green), danger(red), primary(blue). Type: data(callback) or url(link).",
 	Secure: true,
 	Args: []ToolArg{
-		{Name: "text", Description: "Message text", Required: true},
-		{Name: "buttons", Description: "Buttons as BASE64-ENCODED JSON", Required: false},
-		{Name: "target", Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+		{Name: "text", Type: ArgString, Description: "Message text", Required: true},
+		{Name: "buttons", Type: ArgString, Description: "Buttons as BASE64-ENCODED JSON", Required: false},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		text := strings.TrimSpace(args["text"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		text := String(args, "text")
 		if text == "" {
 			return "Error: text is required"
 		}
-		target := resolveContextPeer(args["target"], userID)
+		target := resolveContextPeer(String(args, "target"), userID)
 		if target == "" {
 			return "Error: no current chat context"
 		}
@@ -321,7 +358,7 @@ var TGSendMessageWithButtons = &ToolDef{
 			return "Error: Telegram not initialized"
 		}
 		var kb *telegram.ReplyInlineMarkup
-		if b64 := strings.TrimSpace(args["buttons"]); b64 != "" {
+		if b64 := String(args, "buttons"); b64 != "" {
 			kb = parseButtons(b64)
 			if kb == nil {
 				return "Error: failed to parse buttons"
@@ -331,15 +368,53 @@ var TGSendMessageWithButtons = &ToolDef{
 	},
 }
 
+var TGSendRich = &ToolDef{
+	Name: "tg_send_rich",
+	Description: "Send a Telegram rich-page message with collapsible sections, tables, quotes, and paragraphs. " +
+		"Use this when the answer is long or has multiple sections — fold details behind collapsibles so the chat stays clean. " +
+		"blocks must be BASE64-ENCODED JSON array of block objects. Block types: " +
+		"{\"type\":\"p\",\"text\":\"...\"}, " +
+		"{\"type\":\"quote\",\"text\":\"...\"}, " +
+		"{\"type\":\"divider\"}, " +
+		"{\"type\":\"details\",\"title\":\"label\",\"open\":false,\"blocks\":[ ...nested blocks... ]}, " +
+		"{\"type\":\"table\",\"header\":true,\"rows\":[[\"col1\",\"col2\"],[\"a\",\"b\"]]}.",
+	Secure: true,
+	Args: []ToolArg{
+		{Name: "blocks", Type: ArgString, Description: "BASE64-ENCODED JSON array of block specs", Required: true},
+		{Name: "target", Type: ArgString, Description: "Chat ID, @username, or 'me'. Omit for current chat.", Required: false},
+	},
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		b64 := String(args, "blocks")
+		if b64 == "" {
+			return "Error: blocks is required"
+		}
+		target := resolveContextPeer(String(args, "target"), userID)
+		if target == "" {
+			return "Error: no current chat context"
+		}
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return fmt.Sprintf("Error decoding base64: %v", err)
+		}
+		if SendTGRichFn == nil {
+			return "Error: Telegram not initialized"
+		}
+		if r := SendTGRichFn(target, string(decoded)); r != "" {
+			return r
+		}
+		return "Sent"
+	},
+}
+
 var SetBotDp = &ToolDef{
 	Name:        "set_bot_dp",
 	Description: "Set the bot profile picture. If reply has a photo, auto-uses it. Otherwise provide file path or URL.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "image", Description: "Local file path or image URL. Omit to use replied-to photo.", Required: false},
+		{Name: "image", Type: ArgString, Description: "Local file path or image URL. Omit to use replied-to photo.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		image := strings.TrimSpace(args["image"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		image := String(args, "image")
 		if image == "" && GetTelegramContextFn != nil && TGDownloadMediaFn != nil {
 			ctx := GetTelegramContextFn(userID)
 			if ctx != nil {
@@ -372,23 +447,23 @@ var TGDownload = &ToolDef{
 	Description: "Download media from a Telegram message. Omit chat_id for current chat. Omit message_id to use replied message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID with media. Omit for replied message.", Required: false},
-		{Name: "save_as", Description: "Optional local file path to save to", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgString, Description: "Message ID with media. Omit for replied message.", Required: false},
+		{Name: "save_as", Type: ArgString, Description: "Optional local file path to save to", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgID := resolveContextMessageID(args["message_id"], userID)
+		msgID := resolveContextMessageID(String(args, "message_id"), userID)
 		if msgID == 0 {
 			return "Error: message_id required and could not be inferred"
 		}
 		if TGDownloadMediaFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		path, err := TGDownloadMediaFn(chat, msgID, strings.TrimSpace(args["save_as"]))
+		path, err := TGDownloadMediaFn(chat, msgID, String(args, "save_as"))
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)
 		}
@@ -401,23 +476,23 @@ var TGGetFile = &ToolDef{
 	Description: "Download a file from a specific message and return the local path. Use this to access files from replied messages before processing. Omit chat_id for current chat, omit message_id for replied message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID with the file. Omit for replied message.", Required: false},
-		{Name: "save_as", Description: "Optional save path", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgString, Description: "Message ID with the file. Omit for replied message.", Required: false},
+		{Name: "save_as", Type: ArgString, Description: "Optional save path", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgID := resolveContextMessageID(args["message_id"], userID)
+		msgID := resolveContextMessageID(String(args, "message_id"), userID)
 		if msgID == 0 {
 			return "Error: message_id required and could not be inferred"
 		}
 		if TGGetFileFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGGetFileFn(chat, msgID, strings.TrimSpace(args["save_as"]))
+		return TGGetFileFn(chat, msgID, String(args, "save_as"))
 	},
 }
 
@@ -426,28 +501,24 @@ var TGForwardMsg = &ToolDef{
 	Description: "Forward a message from one chat to another. Omit from/to for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "from_chat_id", Description: "Source chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID to forward", Required: true},
-		{Name: "to_chat_id", Description: "Destination chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "from_chat_id", Type: ArgString, Description: "Source chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgInt, Description: "Message ID to forward", Required: true},
+		{Name: "to_chat_id", Type: ArgString, Description: "Destination chat ID or @username. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		msgStr := strings.TrimSpace(args["message_id"])
-		if msgStr == "" {
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		msgID, ok := Int(args, "message_id")
+		if !ok || msgID == 0 {
 			return "Error: message_id is required"
 		}
-		from := resolveContextPeer(args["from_chat_id"], userID)
-		to := resolveContextPeer(args["to_chat_id"], userID)
+		from := resolveContextPeer(String(args, "from_chat_id"), userID)
+		to := resolveContextPeer(String(args, "to_chat_id"), userID)
 		if from == "" || to == "" {
 			return "Error: from/to chat could not be inferred"
-		}
-		var msgID int32
-		if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
-			return "Error: message_id must be numeric"
 		}
 		if TGForwardMsgFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGForwardMsgFn(from, msgID, to)
+		return TGForwardMsgFn(from, int32(msgID), to)
 	},
 }
 
@@ -456,31 +527,31 @@ var TGDeleteMsg = &ToolDef{
 	Description: "Delete messages from a chat. Omit chat_id for current chat. Omit message_ids to delete replied-to message.",
 	Secure:      false,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_ids", Description: "Comma-separated message IDs. Omit to delete replied-to message.", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_ids", Type: ArgList, Description: "Message IDs (comma-separated or array). Omit to delete replied-to message.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgStr := strings.TrimSpace(args["message_ids"])
 		var msgIDs []int32
-		if msgStr == "" {
+		ids := IntList(args, "message_ids")
+		if len(ids) == 0 {
 			id := resolveContextMessageID("", userID)
 			if id == 0 {
 				return "Error: no message to delete"
 			}
 			msgIDs = append(msgIDs, id)
 		} else {
-			for _, part := range strings.Split(msgStr, ",") {
-				part = strings.TrimSpace(part)
-				var id int32
-				if _, err := fmt.Sscanf(part, "%d", &id); err != nil {
-					return fmt.Sprintf("Error: invalid ID %q", part)
+			for _, id := range ids {
+				if id > 0 {
+					msgIDs = append(msgIDs, int32(id))
 				}
-				msgIDs = append(msgIDs, id)
 			}
+		}
+		if len(msgIDs) == 0 {
+			return "Error: no valid message IDs"
 		}
 		if TGDeleteMsgFn == nil {
 			return "Error: Telegram not initialized"
@@ -494,23 +565,23 @@ var TGPinMsg = &ToolDef{
 	Description: "Pin a message in a chat. Omit chat_id for current chat. Omit message_id for replied-to message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID to pin. Omit for replied message.", Required: false},
-		{Name: "silent", Description: "Pin silently (true/false, default false)", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgString, Description: "Message ID to pin. Omit for replied message.", Required: false},
+		{Name: "silent", Type: ArgBool, Description: "Pin silently (default false)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgID := resolveContextMessageID(args["message_id"], userID)
+		msgID := resolveContextMessageID(String(args, "message_id"), userID)
 		if msgID == 0 {
 			return "Error: message_id could not be inferred"
 		}
 		if TGPinMsgFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGPinMsgFn(chat, msgID, strings.EqualFold(args["silent"], "true"))
+		return TGPinMsgFn(chat, msgID, BoolOr(args, "silent", false))
 	},
 }
 
@@ -519,15 +590,15 @@ var TGUnpinMsg = &ToolDef{
 	Description: "Unpin a message from a chat. Omit chat_id for current chat. Omit message_id for replied-to message.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID to unpin. Omit for replied message.", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgString, Description: "Message ID to unpin. Omit for replied message.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgID := resolveContextMessageID(args["message_id"], userID)
+		msgID := resolveContextMessageID(String(args, "message_id"), userID)
 		if msgID == 0 {
 			return "Error: message_id could not be inferred"
 		}
@@ -543,10 +614,10 @@ var TGGetChatInfo = &ToolDef{
 	Description: "Get info about a Telegram user, group, or channel. Omit peer to use current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "peer", Description: "Chat/user ID (numeric) or @username. Omit for current chat.", Required: false},
+		{Name: "peer", Type: ArgString, Description: "Chat/user ID (numeric) or @username. Omit for current chat.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		peer := resolveContextPeer(args["peer"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		peer := resolveContextPeer(String(args, "peer"), userID)
 		if peer == "" {
 			return "Error: peer required"
 		}
@@ -562,20 +633,20 @@ var TGReact = &ToolDef{
 	Description: "React to a message with an emoji. Omit chat_id/message_id to use context.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "emoji", Description: "Emoji reaction (e.g. '👍', '❤️', '🔥')", Required: true},
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID. Omit for replied/current message.", Required: false},
+		{Name: "emoji", Type: ArgString, Description: "Emoji reaction (e.g. '👍', '❤️', '🔥')", Required: true},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgString, Description: "Message ID. Omit for replied/current message.", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		emoji := strings.TrimSpace(args["emoji"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		emoji := String(args, "emoji")
 		if emoji == "" {
 			return "Error: emoji is required"
 		}
-		chat := resolveContextPeer(args["chat_id"], userID)
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		msgID := resolveContextMessageID(args["message_id"], userID)
+		msgID := resolveContextMessageID(String(args, "message_id"), userID)
 		if msgID == 0 {
 			return "Error: message_id could not be inferred"
 		}
@@ -591,20 +662,17 @@ var TGGetMembers = &ToolDef{
 	Description: "List members of a group or channel. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "limit", Description: "Max members to return (default 50, max 200)", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "limit", Type: ArgInt, Description: "Max members to return (default 50, max 200)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		limit := 50
-		if s := strings.TrimSpace(args["limit"]); s != "" {
-			fmt.Sscanf(s, "%d", &limit)
-			if limit <= 0 || limit > 200 {
-				limit = 50
-			}
+		limit := IntOr(args, "limit", 50)
+		if limit <= 0 || limit > 200 {
+			limit = 50
 		}
 		if TGGetMembersFn == nil {
 			return "Error: Telegram not initialized"
@@ -618,28 +686,29 @@ var TGBroadcast = &ToolDef{
 	Description: "Send the same message to multiple chats.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_ids", Description: "Comma-separated chat IDs or @usernames", Required: true},
-		{Name: "text", Description: "Message text (HTML allowed)", Required: true},
+		{Name: "chat_ids", Type: ArgList, Description: "Chat IDs or @usernames (comma-separated or array)", Required: true},
+		{Name: "text", Type: ArgString, Description: "Message text (HTML allowed)", Required: true},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		idsStr := strings.TrimSpace(args["chat_ids"])
-		text := strings.TrimSpace(args["text"])
-		if idsStr == "" || text == "" {
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		peers := List(args, "chat_ids")
+		text := String(args, "text")
+		if len(peers) == 0 || text == "" {
 			return "Error: chat_ids and text are required"
 		}
-		var peers []string
-		for p := range strings.SplitSeq(idsStr, ",") {
+		// trim each peer
+		cleaned := make([]string, 0, len(peers))
+		for _, p := range peers {
 			if p = strings.TrimSpace(p); p != "" {
-				peers = append(peers, p)
+				cleaned = append(cleaned, p)
 			}
 		}
-		if len(peers) == 0 {
+		if len(cleaned) == 0 {
 			return "Error: no valid peers"
 		}
 		if TGBroadcastFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGBroadcastFn(peers, text)
+		return TGBroadcastFn(cleaned, text)
 	},
 }
 
@@ -648,26 +717,22 @@ var TGGetMessage = &ToolDef{
 	Description: "Fetch a specific message by ID. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID to fetch", Required: true},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgInt, Description: "Message ID to fetch", Required: true},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		msgStr := strings.TrimSpace(args["message_id"])
-		if msgStr == "" {
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		msgID, ok := Int(args, "message_id")
+		if !ok || msgID == 0 {
 			return "Error: message_id is required"
 		}
-		chat := resolveContextPeer(args["chat_id"], userID)
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
-		}
-		var msgID int32
-		if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
-			return "Error: message_id must be numeric"
 		}
 		if TGGetMessageFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGGetMessageFn(chat, msgID)
+		return TGGetMessageFn(chat, int32(msgID))
 	},
 }
 
@@ -676,28 +741,24 @@ var TGEditMessage = &ToolDef{
 	Description: "Edit a sent message. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current chat.", Required: false},
-		{Name: "message_id", Description: "Message ID to edit", Required: true},
-		{Name: "text", Description: "New message text (HTML allowed)", Required: true},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
+		{Name: "message_id", Type: ArgInt, Description: "Message ID to edit", Required: true},
+		{Name: "text", Type: ArgString, Description: "New message text (HTML allowed)", Required: true},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		msgStr := strings.TrimSpace(args["message_id"])
-		text := strings.TrimSpace(args["text"])
-		if msgStr == "" || text == "" {
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		msgID, ok := Int(args, "message_id")
+		text := String(args, "text")
+		if !ok || msgID == 0 || text == "" {
 			return "Error: message_id and text are required"
 		}
-		chat := resolveContextPeer(args["chat_id"], userID)
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
-		}
-		var msgID int32
-		if _, err := fmt.Sscanf(msgStr, "%d", &msgID); err != nil {
-			return "Error: message_id must be numeric"
 		}
 		if TGEditMessageFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGEditMessageFn(chat, msgID, text)
+		return TGEditMessageFn(chat, int32(msgID), text)
 	},
 }
 
@@ -706,22 +767,21 @@ var TGCreateInvite = &ToolDef{
 	Description: "Create an invite link for a group/channel. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Chat ID or @username. Omit for current.", Required: false},
-		{Name: "expire_date", Description: "Expiration Unix timestamp (0 = never)", Required: false},
-		{Name: "member_limit", Description: "Max members via link (0 = unlimited)", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current.", Required: false},
+		{Name: "expire_date", Type: ArgInt, Description: "Expiration Unix timestamp (0 = never)", Required: false},
+		{Name: "member_limit", Type: ArgInt, Description: "Max members via link (0 = unlimited)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		var expiry, limit int32
-		fmt.Sscanf(args["expire_date"], "%d", &expiry)
-		fmt.Sscanf(args["member_limit"], "%d", &limit)
+		expiry := IntOr(args, "expire_date", 0)
+		limit := IntOr(args, "member_limit", 0)
 		if TGCreateInviteFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGCreateInviteFn(chat, expiry, limit)
+		return TGCreateInviteFn(chat, int32(expiry), int32(limit))
 	},
 }
 
@@ -730,11 +790,11 @@ var TGGetProfilePhotos = &ToolDef{
 	Description: "Get profile photos of a user. Defaults to 'me'. Supports IDs and @usernames.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "peer", Description: "User ID or @username. Omit for self.", Required: false},
-		{Name: "limit", Description: "Max photos (default 10, max 100)", Required: false},
+		{Name: "peer", Type: ArgString, Description: "User ID or @username. Omit for self.", Required: false},
+		{Name: "limit", Type: ArgInt, Description: "Max photos (default 10, max 100)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		peer := strings.TrimSpace(args["peer"])
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		peer := String(args, "peer")
 		if peer == "" {
 			peer = "me"
 		}
@@ -742,12 +802,9 @@ var TGGetProfilePhotos = &ToolDef{
 		if peer == "" {
 			return "Error: peer required"
 		}
-		limit := 10
-		if s := strings.TrimSpace(args["limit"]); s != "" {
-			fmt.Sscanf(s, "%d", &limit)
-			if limit <= 0 || limit > 100 {
-				limit = 10
-			}
+		limit := IntOr(args, "limit", 10)
+		if limit <= 0 || limit > 100 {
+			limit = 10
 		}
 		if TGGetProfilePhotosFn == nil {
 			return "Error: Telegram not initialized"
@@ -761,27 +818,26 @@ var TGBanUser = &ToolDef{
 	Description: "Ban a user from a group/channel. Optionally delete their message history and set ban duration. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "user_id", Description: "User ID or @username to ban", Required: true},
-		{Name: "delete_history", Description: "Delete user's messages (true/false, default false)", Required: false},
-		{Name: "until_date", Description: "Unix timestamp for ban expiry (0 = permanent)", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "user_id", Type: ArgString, Description: "User ID or @username to ban", Required: true},
+		{Name: "delete_history", Type: ArgBool, Description: "Delete user's messages (default false)", Required: false},
+		{Name: "until_date", Type: ArgInt, Description: "Unix timestamp for ban expiry (0 = permanent)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		target := strings.TrimSpace(args["user_id"])
+		target := String(args, "user_id")
 		if target == "" {
 			return "Error: user_id is required"
 		}
-		deleteHistory := strings.EqualFold(args["delete_history"], "true")
-		var untilDate int32
-		fmt.Sscanf(args["until_date"], "%d", &untilDate)
+		deleteHistory := BoolOr(args, "delete_history", false)
+		untilDate := IntOr(args, "until_date", 0)
 		if TGBanUserFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGBanUserFn(chat, target, deleteHistory, untilDate)
+		return TGBanUserFn(chat, target, deleteHistory, int32(untilDate))
 	},
 }
 
@@ -790,25 +846,24 @@ var TGMuteUser = &ToolDef{
 	Description: "Mute (restrict) a user in a group so they cannot send messages. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "user_id", Description: "User ID or @username to mute", Required: true},
-		{Name: "until_date", Description: "Unix timestamp for mute expiry (0 = permanent)", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "user_id", Type: ArgString, Description: "User ID or @username to mute", Required: true},
+		{Name: "until_date", Type: ArgInt, Description: "Unix timestamp for mute expiry (0 = permanent)", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		target := strings.TrimSpace(args["user_id"])
+		target := String(args, "user_id")
 		if target == "" {
 			return "Error: user_id is required"
 		}
-		var untilDate int32
-		fmt.Sscanf(args["until_date"], "%d", &untilDate)
+		untilDate := IntOr(args, "until_date", 0)
 		if TGMuteUserFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGMuteUserFn(chat, target, untilDate)
+		return TGMuteUserFn(chat, target, int32(untilDate))
 	},
 }
 
@@ -817,15 +872,15 @@ var TGKickUser = &ToolDef{
 	Description: "Kick (remove) a user from a group. They can rejoin via invite. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "user_id", Description: "User ID or @username to kick", Required: true},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "user_id", Type: ArgString, Description: "User ID or @username to kick", Required: true},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		target := strings.TrimSpace(args["user_id"])
+		target := String(args, "user_id")
 		if target == "" {
 			return "Error: user_id is required"
 		}
@@ -841,28 +896,40 @@ var TGPromoteAdmin = &ToolDef{
 	Description: "Promote a user to admin in a group/channel with specific rights. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "user_id", Description: "User ID or @username to promote", Required: true},
-		{Name: "title", Description: "Custom admin title (optional)", Required: false},
-		{Name: "rights", Description: "JSON object of rights: {\"post_messages\":true,\"delete_messages\":true,\"ban_users\":true,\"invite_users\":true,\"pin_messages\":true,\"manage_call\":true}", Required: false},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "user_id", Type: ArgString, Description: "User ID or @username to promote", Required: true},
+		{Name: "title", Type: ArgString, Description: "Custom admin title (optional)", Required: false},
+		{Name: "rights", Type: ArgDict, Description: "Rights map: {\"post_messages\":true,\"delete_messages\":true,\"ban_users\":true,\"invite_users\":true,\"pin_messages\":true,\"manage_call\":true}", Required: false},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		target := strings.TrimSpace(args["user_id"])
+		target := String(args, "user_id")
 		if target == "" {
 			return "Error: user_id is required"
 		}
 		rights := map[string]bool{}
-		if r := strings.TrimSpace(args["rights"]); r != "" {
+		if m := Dict(args, "rights"); m != nil {
+			for k, v := range m {
+				switch t := v.(type) {
+				case bool:
+					rights[k] = t
+				case string:
+					rights[k] = strings.EqualFold(strings.TrimSpace(t), "true")
+				case float64:
+					rights[k] = t != 0
+				}
+			}
+		} else if r := String(args, "rights"); r != "" {
+			// fall back: try unmarshalling as JSON string
 			_ = json.Unmarshal([]byte(r), &rights)
 		}
 		if TGPromoteAdminFn == nil {
 			return "Error: Telegram not initialized"
 		}
-		return TGPromoteAdminFn(chat, target, rights, strings.TrimSpace(args["title"]))
+		return TGPromoteAdminFn(chat, target, rights, String(args, "title"))
 	},
 }
 
@@ -871,15 +938,15 @@ var TGDemoteAdmin = &ToolDef{
 	Description: "Remove admin rights from a user in a group/channel. Omit chat_id for current chat.",
 	Secure:      true,
 	Args: []ToolArg{
-		{Name: "chat_id", Description: "Group/channel ID or @username. Omit for current.", Required: false},
-		{Name: "user_id", Description: "User ID or @username to demote", Required: true},
+		{Name: "chat_id", Type: ArgString, Description: "Group/channel ID or @username. Omit for current.", Required: false},
+		{Name: "user_id", Type: ArgString, Description: "User ID or @username to demote", Required: true},
 	},
-	ExecuteWithContext: func(args map[string]string, userID string) string {
-		chat := resolveContextPeer(args["chat_id"], userID)
+	ExecuteWithContext: func(args map[string]any, userID string) string {
+		chat := resolveContextPeer(String(args, "chat_id"), userID)
 		if chat == "" {
 			return "Error: no current chat context"
 		}
-		target := strings.TrimSpace(args["user_id"])
+		target := String(args, "user_id")
 		if target == "" {
 			return "Error: user_id is required"
 		}

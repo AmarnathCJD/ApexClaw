@@ -45,7 +45,6 @@ var sharedFields = []fieldDef{
 	{key: "DEFAULT_MODEL", label: "Default AI Model", placeholder: "GLM-4.7"},
 	{key: "MAX_ITERATIONS", label: "Max Agent Iterations", placeholder: "10", numericOnly: true},
 	{key: "DNS", label: "Custom DNS Server", placeholder: "1.1.1.1 (optional)"},
-	{key: "ZAI_TOKEN", label: "ZAI Token", placeholder: "your-token-here", secret: true},
 	{key: "EMAIL_ADDRESS", label: "Gmail Address", placeholder: "your.email@gmail.com"},
 	{key: "EMAIL_PASSWORD", label: "Gmail App Password", placeholder: "16-character app password", secret: true},
 }
