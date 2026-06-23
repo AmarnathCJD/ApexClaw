@@ -573,6 +573,29 @@ func (b *TelegramBot) handleGuestChat(g *telegram.GuestChatQuery) error {
 	return err
 }
 
+var (
+	mentionApexRe = regexp.MustCompile(`(?i)\bapex(claw)?\b`)
+	echoOpenerRe  = regexp.MustCompile(`(?i)^\s*apexclaw\s*:\s*`)
+)
+
+func (b *TelegramBot) isBotMentioned(text string) bool {
+	if uname := strings.TrimSpace(b.botUsername); uname != "" {
+		needle := "@" + strings.ToLower(uname)
+		if strings.Contains(strings.ToLower(text), needle) {
+			return true
+		}
+	}
+	return mentionApexRe.MatchString(text)
+}
+
+func looksLikeBotEcho(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	return echoOpenerRe.MatchString(t)
+}
+
 func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	userID := strconv.FormatInt(m.SenderID(), 10)
 	if !IsSudo(userID) {
@@ -580,7 +603,7 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 	}
 
 	if !m.IsPrivate() {
-		mentioned := strings.Contains(strings.ToLower(text), "apex")
+		mentioned := b.isBotMentioned(text)
 		if !mentioned && m.IsReply() {
 			if r, err := m.GetReplyMessage(); err == nil && r.SenderID() == b.client.Me().ID {
 				mentioned = true
@@ -589,6 +612,16 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 		if !mentioned {
 			return nil
 		}
+	}
+
+	if looksLikeBotEcho(text) {
+		log.Printf("[TG] ignoring message that appears to be a quote of bot output: %q", truncate(text, 80))
+		return nil
+	}
+
+	if existing := tryGetAgentSession(userID); existing != nil && existing.IsBusy() {
+		log.Printf("[TG] dropping message from %s — session is mid-turn (%q)", userID, truncate(text, 60))
+		return nil
 	}
 
 	log.Printf("[TG] msg from %s (chat %d): %q", userID, m.ChatID(), truncate(text, 80))

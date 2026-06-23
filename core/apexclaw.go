@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"apexclaw/model"
@@ -313,7 +314,9 @@ type AgentSession struct {
 	debugMode      bool
 	traceLog       []TraceEntry
 
-	// Tool execution support
+	turnMu        sync.Mutex
+	turnBusy      atomic.Bool
+
 	toolCache     *ToolCache
 	toolAttempts  map[string]int
 	lastToolErr   map[string]string
@@ -581,7 +584,19 @@ func timestampedMessage(text string) string {
 // MaxParallelTools caps how many non-Sequential tool calls run concurrently in a turn.
 const MaxParallelTools = 4
 
+// IsBusy returns true if a RunStream turn is currently in flight on this
+// session. Callers (e.g. the Telegram handler) can use it to short-circuit
+// incoming messages instead of letting them queue up.
+func (s *AgentSession) IsBusy() bool { return s.turnBusy.Load() }
+
 func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string, onChunk func(string)) (string, error) {
+	s.turnMu.Lock()
+	s.turnBusy.Store(true)
+	defer func() {
+		s.turnBusy.Store(false)
+		s.turnMu.Unlock()
+	}()
+
 	s.mu.Lock()
 	s.history = append(s.history, model.Message{Role: "user", Content: timestampedMessage(userText)})
 	s.streamCallback = onChunk
@@ -670,17 +685,30 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		s.history = append(s.history, model.Message{Role: "assistant", Content: reply, ReasoningDetails: replyMsg.ReasoningDetails})
 		s.mu.Unlock()
 
-		// Partition into sequential vs parallel-eligible calls.
 		type pending struct {
 			idx  int
 			call model.ToolCall
 		}
 		var parallelCalls, sequentialCalls []pending
+		results := make([]model.ToolResult, len(toolCalls))
+		dedupKey := map[string]int{}
 		for idx, tc := range toolCalls {
 			if tc.ID == "" {
 				tc.ID = fmt.Sprintf("c%d", idx+1)
 				toolCalls[idx].ID = tc.ID
 			}
+			key := tc.Name + "|" + tc.ArgsJSON
+			if firstIdx, dup := dedupKey[key]; dup {
+				firstID := toolCalls[firstIdx].ID
+				results[idx] = model.ToolResult{
+					ID:     tc.ID,
+					Name:   tc.Name,
+					Ok:     true,
+					Output: fmt.Sprintf("[deduplicated — identical to call %s in this batch; see that result]", firstID),
+				}
+				continue
+			}
+			dedupKey[key] = idx
 			if t, ok := s.registry.Get(tc.Name); ok && t.Sequential {
 				sequentialCalls = append(sequentialCalls, pending{idx, tc})
 			} else {
@@ -689,10 +717,8 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		}
 
 		s.mu.Lock()
-		s.toolCallCount += len(toolCalls)
+		s.toolCallCount += len(parallelCalls) + len(sequentialCalls)
 		s.mu.Unlock()
-
-		results := make([]model.ToolResult, len(toolCalls))
 
 		// Dispatch closure — same shape for parallel and sequential paths.
 		dispatch := func(p pending) {
@@ -1280,6 +1306,14 @@ var agentSessions = struct {
 	sync.RWMutex
 	m map[string]*AgentSession
 }{m: make(map[string]*AgentSession)}
+
+// tryGetAgentSession returns the existing session for key, or nil if none
+// has been created yet. Unlike GetOrCreateAgentSession this never allocates.
+func tryGetAgentSession(key string) *AgentSession {
+	agentSessions.RLock()
+	defer agentSessions.RUnlock()
+	return agentSessions.m[key]
+}
 
 func GetOrCreateAgentSession(key string) *AgentSession {
 	agentSessions.RLock()
