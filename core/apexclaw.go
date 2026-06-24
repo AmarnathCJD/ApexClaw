@@ -81,7 +81,15 @@ You are ApexClaw. Not ChatGLM. Not Qingyan. Not Zhipu. Not GLM-4. If asked who y
 
 # VOICE
 
-Direct. Sharp. Slightly dry. No filler openers like "Great question!" or "Certainly!". No filler closers like "Let me know if you need more help!". You don't apologize for existing. You finish tasks, you don't narrate intent endlessly. When something is dumb, you say so politely. When something works, you ship it and move on.
+Direct. Sharp. Slightly dry. No filler openers ("Great question!", "Certainly!"). No filler closers ("Let me know if you need more help!"). You don't apologize for existing. You finish tasks, you don't narrate intent endlessly.
+
+# NEVER USE EMOJI
+
+Do not include any emoji or pictographic characters in your replies. No checkmarks, no warning signs, no smileys, no flags, nothing. Plain text only. If you need to mark a section as important, use bold or a blockquote, not pictograms.
+
+# MESSAGES YOU RECEIVE FROM YOURSELF
+
+You will sometimes see context that includes your own previous output (because users quote you). Treat quotes of your own previous output as background context only. Do NOT respond to them as if they were new questions. If a user's message is just a quote of your previous reply with no new question, do nothing and let the agent harness finish the turn empty-handed.
 
 `, apexVersion, apexVersion))
 
@@ -314,8 +322,8 @@ type AgentSession struct {
 	debugMode      bool
 	traceLog       []TraceEntry
 
-	turnMu        sync.Mutex
-	turnBusy      atomic.Bool
+	turnMu   sync.Mutex
+	turnBusy atomic.Bool
 
 	toolCache     *ToolCache
 	toolAttempts  map[string]int
@@ -348,10 +356,10 @@ func (s *AgentSession) AttachZAIFile(f model.ZAIFile) {
 // we walk back by user-message boundaries.
 func (s *AgentSession) trimHistory() {
 	const (
-		targetBytes   = 32 * 1024
-		defaultPairs  = 20
-		minPairs      = 6
-		maxFirstUser  = 8 * 1024
+		targetBytes  = 32 * 1024
+		defaultPairs = 20
+		minPairs     = 6
+		maxFirstUser = 8 * 1024
 	)
 
 	h := s.history
@@ -658,8 +666,15 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			onChunk("__COMMENTARY:" + commentary + "__\n")
 		}
 
-		// No tool calls -> final reply.
 		if len(toolCalls) == 0 {
+			if looksLikeUnparsedToolCalls(reply) {
+				log.Printf("[AGENT-STREAM] reply looks like unparsed tool_calls block — asking model to retry cleanly")
+				s.mu.Lock()
+				s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
+				s.history = append(s.history, model.Message{Role: "user", Content: "[FORMAT ERROR] Your last reply contained tool-call JSON that the harness could not parse (likely a syntax error inside the args). Re-emit ONLY a valid ```tool_calls fenced block. Do not include the previous text or prose — just the corrected block."})
+				s.mu.Unlock()
+				continue
+			}
 			finalReply := cleanReply(reply)
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{Role: "assistant", Content: finalReply, ReasoningDetails: replyMsg.ReasoningDetails})
@@ -726,7 +741,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			isTGTool := strings.HasPrefix(p.call.Name, "tg_")
 			autoProgress(senderID, p.call.Name, p.call.ArgsJSON, "running")
 			if onChunk != nil && !isTGTool {
-				onChunk(fmt.Sprintf("__TOOL_CALL:%s|%s__\n", p.call.ID, label))
+				onChunk(fmt.Sprintf("__TOOL_CALL:%s\x1f%s__\n", p.call.ID, label))
 			}
 			res := s.executeTool(p.call.Name, p.call.ArgsJSON, senderID)
 			isErr := isToolError(res)
@@ -740,7 +755,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				status = "err:" + snippet
 			}
 			if onChunk != nil && !isTGTool {
-				onChunk(fmt.Sprintf("__TOOL_RESULT:%s|%s|%s__\n", p.call.ID, label, status))
+				onChunk(fmt.Sprintf("__TOOL_RESULT:%s\x1f%s\x1f%s__\n", p.call.ID, label, status))
 			}
 			results[p.idx] = model.BuildToolResult(p.call.ID, p.call.Name, res, isErr)
 		}
@@ -913,9 +928,9 @@ func (s *AgentSession) DumpTrace() string {
 }
 
 const (
-	defaultMaxOutput   = 16 * 1024            // 16KB default cap for tool result body
-	defaultToolTimeout = 30 * time.Second     // wall-clock timeout per tool
-	spillTTL           = time.Hour            // spill files cleaned up after this long
+	defaultMaxOutput   = 16 * 1024        // 16KB default cap for tool result body
+	defaultToolTimeout = 30 * time.Second // wall-clock timeout per tool
+	spillTTL           = time.Hour        // spill files cleaned up after this long
 )
 
 // wrapToolResult applies the per-tool MaxOutput cap. If the result exceeds the
@@ -1288,6 +1303,26 @@ func repairCutoffResponse(s string) string {
 	return s
 }
 
+func looksLikeUnparsedToolCalls(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "```tool_calls") {
+		return true
+	}
+	if !(strings.HasPrefix(t, "[") || strings.HasPrefix(t, "{")) {
+		return false
+	}
+	if !strings.Contains(t, "\"name\"") {
+		return false
+	}
+	hasArgs := strings.Contains(t, "\"args\"") ||
+		strings.Contains(t, "\"arguments\"") ||
+		strings.Contains(t, "\"parameters\"")
+	return hasArgs
+}
+
 func cleanReply(s string) string {
 	for {
 		start := strings.Index(s, "<think>")
@@ -1348,4 +1383,3 @@ func DeleteAgentSession(key string) {
 	delete(agentSessions.m, key)
 	agentSessions.Unlock()
 }
-

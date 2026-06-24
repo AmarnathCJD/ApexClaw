@@ -299,7 +299,10 @@ func (b *TelegramBot) Start() error {
 	b.client.OnCommand("settings", b.handleSettings)
 
 	b.client.On(telegram.OnMessage, func(m *telegram.NewMessage) error {
-		if m.Sender == nil || m.Sender.Bot {
+		if m.Sender == nil || m.Sender.Bot || m.IsOutgoing() {
+			return nil
+		}
+		if m.IsMedia() {
 			return nil
 		}
 		text := m.Text()
@@ -310,7 +313,7 @@ func (b *TelegramBot) Start() error {
 	})
 
 	b.client.On(telegram.OnMessage, func(m *telegram.NewMessage) error {
-		if m.Sender == nil || m.Sender.Bot {
+		if m.Sender == nil || m.Sender.Bot || m.IsOutgoing() {
 			return nil
 		}
 		if !m.IsMedia() {
@@ -578,6 +581,28 @@ var (
 	echoOpenerRe  = regexp.MustCompile(`(?i)^\s*apexclaw\s*:\s*`)
 )
 
+var recentlyHandled = struct {
+	sync.Mutex
+	ids map[string]time.Time
+}{ids: make(map[string]time.Time)}
+
+func alreadyHandled(chatID int64, msgID int32) bool {
+	key := fmt.Sprintf("%d:%d", chatID, msgID)
+	recentlyHandled.Lock()
+	defer recentlyHandled.Unlock()
+	now := time.Now()
+	for k, t := range recentlyHandled.ids {
+		if now.Sub(t) > 2*time.Minute {
+			delete(recentlyHandled.ids, k)
+		}
+	}
+	if _, ok := recentlyHandled.ids[key]; ok {
+		return true
+	}
+	recentlyHandled.ids[key] = now
+	return false
+}
+
 func (b *TelegramBot) isBotMentioned(text string) bool {
 	if uname := strings.TrimSpace(b.botUsername); uname != "" {
 		needle := "@" + strings.ToLower(uname)
@@ -597,6 +622,10 @@ func looksLikeBotEcho(text string) bool {
 }
 
 func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
+	if alreadyHandled(m.ChatID(), m.ID) {
+		log.Printf("[TG] dropping duplicate event for chat=%d msg=%d", m.ChatID(), m.ID)
+		return nil
+	}
 	userID := strconv.FormatInt(m.SenderID(), 10)
 	if !IsSudo(userID) {
 		return nil
@@ -709,6 +738,10 @@ func (b *TelegramBot) sendMaxIterButtons(chatID, replyToMsgID int64, userID, exp
 }
 
 func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
+	if alreadyHandled(m.ChatID(), m.ID) {
+		log.Printf("[TG] dropping duplicate voice event for chat=%d msg=%d", m.ChatID(), m.ID)
+		return nil
+	}
 	userID := strconv.FormatInt(m.Sender.ID, 10)
 	if !IsSudo(userID) {
 		return nil
@@ -765,6 +798,10 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 }
 
 func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
+	if alreadyHandled(m.ChatID(), m.ID) {
+		log.Printf("[TG] dropping duplicate file event for chat=%d msg=%d", m.ChatID(), m.ID)
+		return nil
+	}
 	userID := strconv.FormatInt(m.SenderID(), 10)
 	if !IsSudo(userID) {
 		return nil
@@ -1126,22 +1163,28 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 			editProgress(false)
 			return
 		}
-		// __TOOL_CALL:<id>|<label>__\n
+		// __TOOL_CALL:<id>\x1f<label>__\n  (unit-separator delimited so labels can contain '|')
 		if after, ok := strings.CutPrefix(chunk, "__TOOL_CALL:"); ok {
 			raw := strings.TrimSuffix(after, "__\n")
-			id, label, _ := strings.Cut(raw, "|")
+			id, label, found := strings.Cut(raw, "\x1f")
+			if !found {
+				id, label, _ = strings.Cut(raw, "|")
+			}
 			mu.Lock()
 			steps = append(steps, stepEntry{id: id, label: label, status: "running"})
 			mu.Unlock()
 			editProgress(false)
 			return
 		}
-		// __TOOL_RESULT:<id>|<label>|<status>__\n
+		// __TOOL_RESULT:<id>\x1f<label>\x1f<status>__\n
 		if after, ok := strings.CutPrefix(chunk, "__TOOL_RESULT:"); ok {
 			raw := strings.TrimSuffix(after, "__\n")
-			parts := strings.SplitN(raw, "|", 3)
+			parts := strings.SplitN(raw, "\x1f", 3)
 			if len(parts) < 3 {
-				return
+				parts = strings.SplitN(raw, "|", 3)
+				if len(parts) < 3 {
+					return
+				}
 			}
 			id, label, statusRaw := parts[0], parts[1], parts[2]
 
@@ -1209,16 +1252,32 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		alreadySent := sentDirect
 		mu.Unlock()
 
-		if msgID != 0 {
-			b.client.DeleteMessages(chatID, []int32{msgID})
+		const maxLen = 3800
+		editOpts := &telegram.SendOptions{ParseMode: telegram.HTML}
+
+		if alreadySent {
+			if msgID != 0 {
+				b.client.EditMessage(chatID, msgID, "<i>done</i>", editOpts)
+			}
+			return
 		}
 
-		if alreadySent || result == "" {
+		if result == "" {
+			if msgID != 0 {
+				b.client.EditMessage(chatID, msgID, "<i>done</i>", editOpts)
+			}
 			return
 		}
 
 		result = stripMarkdown(result)
-		const maxLen = 3800
+
+		if msgID != 0 && len(result) <= maxLen {
+			if _, err := b.client.EditMessage(chatID, msgID, result, editOpts); err == nil {
+				return
+			}
+		}
+
+		first := true
 		for len(result) > 0 {
 			chunk := result
 			if len(chunk) > maxLen {
@@ -1231,7 +1290,15 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 			} else {
 				result = ""
 			}
+			if first && msgID != 0 {
+				if _, err := b.client.EditMessage(chatID, msgID, chunk, editOpts); err == nil {
+					first = false
+					continue
+				}
+				msgID = 0
+			}
 			b.safeSendText(chatID, replyToMsgID, chunk)
+			first = false
 		}
 	}
 

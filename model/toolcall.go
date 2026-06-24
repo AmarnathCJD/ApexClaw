@@ -163,7 +163,82 @@ func parseJSONCalls(body string) ([]ToolCall, error) {
 	if calls, err := try(body); err == nil {
 		return calls, nil
 	}
-	return try(tolerantFix(body))
+	if calls, err := try(tolerantFix(body)); err == nil {
+		return calls, nil
+	}
+	if calls := parsePerObjectFallback(body); len(calls) > 0 {
+		return calls, nil
+	}
+	return nil, fmt.Errorf("not parseable as array or dict")
+}
+
+func parsePerObjectFallback(body string) []ToolCall {
+	chunks := splitTopLevelObjects(body)
+	if len(chunks) == 0 {
+		return nil
+	}
+	var out []ToolCall
+	for _, c := range chunks {
+		var obj map[string]any
+		if json.Unmarshal([]byte(c), &obj) != nil {
+			if fixed := tolerantFix(c); fixed != c {
+				if json.Unmarshal([]byte(fixed), &obj) != nil {
+					continue
+				}
+			} else {
+				continue
+			}
+		}
+		if _, ok := obj["name"]; !ok {
+			continue
+		}
+		got := callsFromArr([]map[string]any{obj})
+		out = append(out, got...)
+	}
+	return out
+}
+
+func splitTopLevelObjects(s string) []string {
+	var out []string
+	depth := 0
+	inStr := false
+	esc := false
+	start := -1
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if ch == '\\' && inStr {
+			esc = true
+			continue
+		}
+		if ch == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		switch ch {
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && start >= 0 {
+				out = append(out, s[start:i+1])
+				start = -1
+			}
+			if depth < 0 {
+				depth = 0
+			}
+		}
+	}
+	return out
 }
 
 // callsFromArr coerces a generic array of objects into typed ToolCalls.

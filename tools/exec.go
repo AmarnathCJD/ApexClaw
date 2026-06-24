@@ -72,16 +72,16 @@ var Exec = &ToolDef{
 
 		result := strings.TrimSpace(string(out))
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("⏱️ TIMEOUT after %ds.\n%s", timeoutSec, result)
+			return fmt.Sprintf("Error: timeout after %ds. partial output:\n%s", timeoutSec, result)
 		}
 		if err != nil {
-			return fmt.Sprintf("❌ FAIL: Exit error: %v\n%s", err, result)
+			return fmt.Sprintf("Error: exit %v\noutput:\n%s", err, result)
 		}
 		if len(result) > 8000 {
 			result = result[:8000] + "\n...(truncated)"
 		}
 		if result == "" {
-			return "✅ OK (completed)"
+			return "(no output, exit 0)"
 		}
 		return result
 	},
@@ -141,6 +141,7 @@ var ExecChain = &ToolDef{
 		stopOnError := BoolOr(args, "stop_on_error", true)
 
 		var results []string
+		lastFailed := false
 		total := len(commands)
 
 		for i, cmd := range commands {
@@ -154,7 +155,8 @@ var ExecChain = &ToolDef{
 			elapsed := time.Since(start)
 
 			if timedOut {
-				results = append(results, fmt.Sprintf("[%d/%d] ⏱️ TIMEOUT after %ds\n%s\n%s", i+1, total, cmdTimeout, cmd, result))
+				results = append(results, fmt.Sprintf("[%d/%d] TIMEOUT after %ds\n$ %s\n%s", i+1, total, cmdTimeout, cmd, result))
+				lastFailed = true
 				if stopOnError {
 					break
 				}
@@ -162,27 +164,30 @@ var ExecChain = &ToolDef{
 			}
 
 			if cmdErr != nil {
-				results = append(results, fmt.Sprintf("[%d/%d] ❌ FAIL (%.1fs)\n%s\n%s", i+1, total, elapsed.Seconds(), cmd, result))
+				results = append(results, fmt.Sprintf("[%d/%d] FAIL exit %v (%.1fs)\n$ %s\n%s", i+1, total, cmdErr, elapsed.Seconds(), cmd, result))
+				lastFailed = true
 				if stopOnError {
 					break
 				}
 				continue
 			}
 
+			lastFailed = false
 			output := result
 			if len(output) > 2000 {
 				output = output[:2000] + "...(truncated)"
 			}
 			if output == "" {
-				output = "(ok)"
+				output = "(no output)"
 			}
-			results = append(results, fmt.Sprintf("[%d/%d] ✅ OK (%.1fs)\n%s", i+1, total, elapsed.Seconds(), cmd))
-			if output != "(ok)" {
-				results[len(results)-1] += fmt.Sprintf("\n%s", output)
-			}
+			results = append(results, fmt.Sprintf("[%d/%d] OK (%.1fs)\n$ %s\n%s", i+1, total, elapsed.Seconds(), cmd, output))
 		}
 
-		return strings.Join(results, "\n\n")
+		joined := strings.Join(results, "\n\n")
+		if lastFailed {
+			return "Error: one or more commands in the chain failed.\n\n" + joined
+		}
+		return joined
 	},
 }
 
