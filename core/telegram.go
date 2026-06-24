@@ -929,7 +929,6 @@ func friendlyErrorMessage(err error) string {
 }
 
 func cleanResultForTelegram(result string) string {
-	// Strip \x00PROGRESS:...\x00 blocks first
 	for {
 		start := strings.Index(result, "\x00PROGRESS:")
 		if start == -1 {
@@ -942,6 +941,9 @@ func cleanResultForTelegram(result string) string {
 		}
 		result = result[:start] + result[start+1+end+1:]
 	}
+	result = reMermaidBlock.ReplaceAllString(result, "")
+	result = reCitationMarker.ReplaceAllString(result, "")
+	result = reEmoji.ReplaceAllString(result, "")
 	lines := strings.Split(result, "\n")
 	var cleaned []string
 	prevLine := ""
@@ -966,8 +968,11 @@ func cleanResultForTelegram(result string) string {
 }
 
 var (
-	allowedTagsRe   = regexp.MustCompile(`(?i)(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|spoiler)>|<a href="[^"]*">|<code class="[^"]*">|<pre language="[^"]*">|<span class="tg-spoiler">|</span>)`)
-	reMdTable       = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`)
+	allowedTagsRe    = regexp.MustCompile(`(?i)(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|spoiler)>|<a href="[^"]*">|<code class="[^"]*">|<pre language="[^"]*">|<span class="tg-spoiler">|</span>)`)
+	reMermaidBlock   = regexp.MustCompile(`(?s)` + "```" + `(?:mermaid|timeline|gantt|sequenceDiagram|flowchart|graph|classDiagram|stateDiagram|erDiagram|journey|pie|gitGraph)\b.*?` + "```")
+	reCitationMarker = regexp.MustCompile(`【[^】]*】`)
+	reEmoji          = regexp.MustCompile(`[\x{1F000}-\x{1FFFF}\x{2600}-\x{27BF}\x{2300}-\x{23FF}\x{2700}-\x{27BF}\x{1F300}-\x{1F9FF}\x{1FA00}-\x{1FAFF}\x{2B00}-\x{2BFF}\x{25A0}-\x{25FF}\x{2190}-\x{21FF}\x{FE0F}]`)
+	reMdTable        = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`)
 	reMdBoldStar    = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`)
 	reMdBoldUnder   = regexp.MustCompile(`(?s)__(.*?)__`)
 	reMdItalicStar  = regexp.MustCompile(`(?s)\*(.*?)\*`)

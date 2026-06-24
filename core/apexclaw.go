@@ -263,6 +263,12 @@ WhatsApp text only:
 
 Telegram supports a small HTML subset. NEVER use Markdown headers (#, ##) — they render as literal hashes. NEVER use Markdown tables — Telegram won't render them; use tg_send_rich for real tables.
 
+NEVER use diagram fences like mermaid, timeline, gantt, sequenceDiagram, flowchart, graph, classDiagram, stateDiagram, erDiagram, journey, pie, gitGraph. Telegram cannot render any of them; they will display as raw text and look broken. If you want to convey schedule/sequence info, use a plain <pre> block or a bulleted list.
+
+NEVER include citation residue from web tools (e.g. 【turn0search3】, [1], 【source】). Strip these before replying — they are model-side artifacts, not real links.
+
+NEVER include emojis or pictographic characters in your prose (📅 📊 💡 ⚠️ ✅ ❌ → all banned). The wider EMOJI ban from the system rules applies here in full. Plain text only; use <b>…</b> or <blockquote>…</blockquote> for emphasis.
+
 Allowed HTML: <b>, <i>, <u>, <s>, <code>, <pre>, <pre><code class="language-go">…</code></pre>, <a href="…">, <blockquote>, <blockquote expandable>, <tg-spoiler>.
 
 Structure long replies with:
