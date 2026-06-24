@@ -384,7 +384,9 @@ var TGSendRich = &ToolDef{
 		"{\"type\":\"quote\",\"text\":\"...\"}, " +
 		"{\"type\":\"divider\"}, " +
 		"{\"type\":\"details\",\"title\":\"label\",\"open\":false,\"blocks\":[ ...nested blocks... ]}, " +
-		"{\"type\":\"table\",\"header\":true,\"rows\":[[\"col1\",\"col2\"],[\"a\",\"b\"]]}.",
+		"{\"type\":\"table\",\"header\":true,\"rows\":[[\"col1\",\"col2\"],[\"a\",\"b\"]]}. " +
+		"ALL text fields (text, title, table cells) are PLAIN TEXT only — no HTML tags. Do NOT put <b>, <i>, <p>, <tr>, <td>, <br> or any other HTML inside text fields; the rich format does not render them and any tags will be stripped. " +
+		"For multiple paragraphs use multiple {\"type\":\"p\"} blocks. For tables use the rows array, not <tr>/<td>. For emphasis there is no markup — restructure into separate blocks or a quote block instead.",
 	Secure: true,
 	Args: []ToolArg{
 		{Name: "blocks", Type: ArgString, Description: "BASE64-ENCODED JSON array of block specs", Required: true},

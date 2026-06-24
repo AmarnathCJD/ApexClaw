@@ -3,15 +3,28 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
+
+var reRichStripTag = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+
+func stripRichHTML(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = reRichStripTag.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	return strings.TrimSpace(s)
+}
 
 // TGSendFile sends a file to a Telegram chat (accepts peer string: ID, username, etc.)
 // forceDocument=true sends as a document; false sends as media (photo/video preview).
@@ -188,13 +201,13 @@ func buildPageBlocks(specs []richBlockSpec) []telegram.PageBlock {
 	for _, s := range specs {
 		switch strings.ToLower(s.Type) {
 		case "p", "paragraph", "":
-			out = append(out, &telegram.PageBlockParagraph{Text: &telegram.TextPlain{Text: s.Text}})
+			out = append(out, &telegram.PageBlockParagraph{Text: &telegram.TextPlain{Text: stripRichHTML(s.Text)}})
 		case "quote":
-			out = append(out, &telegram.PageBlockPullquote{Text: &telegram.TextPlain{Text: s.Text}, Caption: &telegram.TextEmpty{}})
+			out = append(out, &telegram.PageBlockPullquote{Text: &telegram.TextPlain{Text: stripRichHTML(s.Text)}, Caption: &telegram.TextEmpty{}})
 		case "divider":
 			out = append(out, &telegram.PageBlockDivider{})
 		case "details", "collapse", "spoiler":
-			title := s.Title
+			title := stripRichHTML(s.Title)
 			if title == "" {
 				title = "Tap to expand"
 			}
@@ -209,7 +222,7 @@ func buildPageBlocks(specs []richBlockSpec) []telegram.PageBlock {
 				cells := make([]*telegram.PageTableCell, 0, len(row))
 				header := s.Header && i == 0
 				for _, cell := range row {
-					cells = append(cells, &telegram.PageTableCell{Header: header, Text: &telegram.TextPlain{Text: cell}})
+					cells = append(cells, &telegram.PageTableCell{Header: header, Text: &telegram.TextPlain{Text: stripRichHTML(cell)}})
 				}
 				rows = append(rows, &telegram.PageTableRow{Cells: cells})
 			}
