@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,11 +26,25 @@ type Message struct {
 
 type Client struct {
 	http       *http.Client
+	zaiMu      sync.Mutex
 	zaiPending []ZAIFile
 }
 
 func (c *Client) AttachZAIFile(f ZAIFile) {
+	c.zaiMu.Lock()
 	c.zaiPending = append(c.zaiPending, f)
+	c.zaiMu.Unlock()
+}
+
+func (c *Client) takeZAIPending() []ZAIFile {
+	c.zaiMu.Lock()
+	defer c.zaiMu.Unlock()
+	if len(c.zaiPending) == 0 {
+		return nil
+	}
+	files := c.zaiPending
+	c.zaiPending = nil
+	return files
 }
 
 func baseTransport() *http.Transport {
@@ -108,6 +123,9 @@ func (c *Client) sendWithRetry(ctx context.Context, model string, messages []Mes
 		if errors.Is(err, errZaiAuth) {
 			isRetryable = true
 		}
+		if errors.Is(err, errZaiEmpty) {
+			isRetryable = true
+		}
 		if !isRetryable {
 			return Message{}, err
 		}
@@ -178,9 +196,8 @@ func (c *Client) sendInternalZAI(ctx context.Context, model string, messages []M
 		IfPlusModel:    false,
 		Networking:     true,
 	}
-	if len(c.zaiPending) > 0 {
-		opts.Files = c.zaiPending
-		c.zaiPending = nil
+	if pending := c.takeZAIPending(); len(pending) > 0 {
+		opts.Files = pending
 	}
 	res, err := ZAIChat(ctx, []zaiMessage{{Role: "user", Content: content}}, opts)
 	if err != nil {

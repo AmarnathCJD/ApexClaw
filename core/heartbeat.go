@@ -9,11 +9,38 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amarnathcjd/gogram/telegram"
 	"github.com/robfig/cron/v3"
 )
+
+var persistDirty atomic.Bool
+
+func markPersistDirty() {
+	persistDirty.Store(true)
+}
+
+func startPersistDrainer(stop <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				if persistDirty.Swap(false) {
+					persistHeartbeatTasks()
+				}
+				return
+			case <-ticker.C:
+				if persistDirty.Swap(false) {
+					persistHeartbeatTasks()
+				}
+			}
+		}
+	}()
+}
 
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
@@ -145,7 +172,7 @@ func PauseTask(labelOrID string) bool {
 	for i, t := range hbStore.tasks {
 		if t.Label == labelOrID || t.ID == labelOrID {
 			hbStore.tasks[i].Enabled = false
-			go persistHeartbeatTasks()
+			markPersistDirty()
 			return true
 		}
 	}
@@ -158,7 +185,7 @@ func ResumeTask(labelOrID string) bool {
 	for i, t := range hbStore.tasks {
 		if t.Label == labelOrID || t.ID == labelOrID {
 			hbStore.tasks[i].Enabled = true
-			go persistHeartbeatTasks()
+			markPersistDirty()
 			return true
 		}
 	}
@@ -182,7 +209,7 @@ func CancelTask(labelOrID string) bool {
 	for i, t := range hbStore.tasks {
 		if t.Label == labelOrID || t.ID == labelOrID {
 			hbStore.tasks = append(hbStore.tasks[:i], hbStore.tasks[i+1:]...)
-			go persistHeartbeatTasks()
+			markPersistDirty()
 			return true
 		}
 	}
@@ -195,6 +222,7 @@ func StartHeartbeat(client *telegram.Client) {
 	heartbeatTGClient = client
 	loadHeartbeatTasks()
 	heartbeatStop = make(chan struct{})
+	startPersistDrainer(heartbeatStop)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -421,7 +449,7 @@ func fireHeartbeatTask(t ScheduledTask) {
 				}
 			}
 			hbStore.mu.Unlock()
-			go persistHeartbeatTasks()
+			markPersistDirty()
 			log.Printf("[HEARTBEAT] task %q scheduled retry at %s", t.Label, retryAt)
 		case "disable":
 			hbStore.mu.Lock()
@@ -432,7 +460,7 @@ func fireHeartbeatTask(t ScheduledTask) {
 				}
 			}
 			hbStore.mu.Unlock()
-			go persistHeartbeatTasks()
+			markPersistDirty()
 			log.Printf("[HEARTBEAT] task %q disabled after failure", t.Label)
 			if heartbeatTGClient != nil && t.TelegramID != 0 {
 				heartbeatTGClient.SendMessage(t.TelegramID,
@@ -457,7 +485,7 @@ func fireHeartbeatTask(t ScheduledTask) {
 		}
 	}
 	hbStore.mu.Unlock()
-	go persistHeartbeatTasks()
+	markPersistDirty()
 
 	if heartbeatTGClient == nil || t.TelegramID == 0 {
 		log.Printf("[HEARTBEAT] task %q: no TG client or TelegramID=0, cannot deliver", t.Label)
@@ -573,7 +601,7 @@ func CancelTasksByTag(tag string) int {
 	}
 	hbStore.tasks = kept
 	if removed > 0 {
-		go persistHeartbeatTasks()
+		markPersistDirty()
 	}
 	return removed
 }

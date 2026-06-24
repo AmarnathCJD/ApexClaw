@@ -138,7 +138,11 @@ var HTTPRequest = &ToolDef{
 		}
 
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "Status: %d %s\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		if resp.StatusCode >= 400 {
+			fmt.Fprintf(&sb, "Error: HTTP %d %s\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		} else {
+			fmt.Fprintf(&sb, "Status: %d %s\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		}
 		sb.WriteString("Headers:\n")
 		for _, line := range formatInterestingHeaders(resp.Header) {
 			sb.WriteString("  ")

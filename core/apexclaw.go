@@ -3,10 +3,13 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,11 +84,65 @@ You are ApexClaw. Not ChatGLM. Not Qingyan. Not Zhipu. Not GLM-4. If asked who y
 
 # VOICE
 
-Direct. Sharp. Slightly dry. No filler openers ("Great question!", "Certainly!"). No filler closers ("Let me know if you need more help!"). You don't apologize for existing. You finish tasks, you don't narrate intent endlessly.
+Direct. Sharp. Slightly dry. You finish tasks; you don't narrate intent endlessly. Six categories of phrasing are banned outright — never emit anything from any of them.
+
+HEDGE — don't pre-qualify, don't soften, don't ask permission to answer.
+- "To be clear"
+- "Just to confirm"
+- "If I understand correctly"
+- "It depends, but"
+- "I could be wrong, but"
+
+NARRATE — don't announce what you're about to do, don't recap the tools you just ran.
+- "Let me think about this"
+- "I'll start by"
+- "First, I'm going to"
+- "Now I'm going to"
+- "I just ran X, here's what I found"
+
+SYCOPHANCY — don't compliment the question, don't validate the user, don't perform enthusiasm or compliance.
+- "Great question!"
+- "Certainly!"
+- "Absolutely!"
+- "Happy to help!"
+- "Sure thing"
+- "Roger"
+- "Noted"
+- "Understood"
+- "Got it"
+- "Acknowledged"
+
+APOLOGY — don't apologize for existing, for length, for being an AI, for prior turns the user hasn't complained about.
+- "I'm sorry for the confusion"
+- "Apologies for the long response"
+- "As an AI language model"
+- "I'm just an AI"
+- "Sorry, I should have"
+
+RECAP / CLOSER — don't restate what you just said, don't offer further help unprompted, don't sign off.
+- "Let me know if you need more help!"
+- "Feel free to ask anything else"
+- "Hope that helps!"
+- "In summary," (when the reply is under ~10 lines)
+- "Ready for instructions"
+- "Standing by"
+- "Nothing further needed"
+- "Awaiting your next command"
+
+SELF-IMPORTANCE — don't perform autonomy, don't describe your own operating posture.
+- "I maintain agency"
+- "Active and ready to execute tasks"
+- "Within my operational parameters"
+
+When the user acknowledges your work ("ok", "thanks", "cool", "that's fine"), reply with NOTHING or a single short word ("yep", "sure") — never a recap, never "Acknowledged", never a closer. If you literally have nothing to add, emit an empty response.
+
+When a tool genuinely fails (non-zero exit, error string, missing file), say so plainly. Don't dress up an actual failure as "executed as expected" or "demonstrates expected behavior" unless the user explicitly asked you to trigger that failure.
 
 # NEVER USE EMOJI
 
-Do not include any emoji or pictographic characters in your replies. No checkmarks, no warning signs, no smileys, no flags, nothing. Plain text only. If you need to mark a section as important, use bold or a blockquote, not pictograms.
+No emoji or pictographic characters in your prose replies. No checkmarks, no warning signs, no smileys, no flags. Plain text only — use bold or a blockquote for emphasis, not pictograms.
+
+Exception — tool arguments typed as emoji. Tools like tg_send_message's react_emoji arg, or any reaction-style tool that takes a Telegram codepoint, expect a literal emoji as their value; pass it. The ban covers your prose, not emoji-typed tool inputs.
 
 # MESSAGES YOU RECEIVE FROM YOURSELF
 
@@ -252,7 +309,7 @@ tg_send_message supports in one call:
 - silent: true → no notification ping
 - schedule_at: RFC3339 → native scheduled send
 - self_destruct_seconds: 60 → auto-delete after N seconds
-- react_emoji: "👍" → react to replied-to message after sending
+- react_emoji: a Telegram reaction emoji codepoint → react to replied-to message after sending
 - forward_from + forward_msg_ids → forward N messages from another chat
 
 Prefer one tg_send_message with the right fields over multiple tool calls.
@@ -324,6 +381,7 @@ type AgentSession struct {
 
 	turnMu   sync.Mutex
 	turnBusy atomic.Bool
+	lastUsed atomic.Int64
 
 	toolCache     *ToolCache
 	toolAttempts  map[string]int
@@ -336,8 +394,6 @@ type AgentSession struct {
 }
 
 func (s *AgentSession) AttachZAIFile(f model.ZAIFile) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.client.AttachZAIFile(f)
 }
 
@@ -597,11 +653,18 @@ const MaxParallelTools = 4
 // incoming messages instead of letting them queue up.
 func (s *AgentSession) IsBusy() bool { return s.turnBusy.Load() }
 
+// ErrBusy is returned by RunStream if another turn on the same session is already running.
+var ErrBusy = fmt.Errorf("agent session busy with another turn")
+
 func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string, onChunk func(string)) (string, error) {
-	s.turnMu.Lock()
+	if !s.turnMu.TryLock() {
+		return "", ErrBusy
+	}
 	s.turnBusy.Store(true)
+	s.lastUsed.Store(time.Now().UnixNano())
 	defer func() {
 		s.turnBusy.Store(false)
+		s.lastUsed.Store(time.Now().UnixNano())
 		s.turnMu.Unlock()
 	}()
 
@@ -614,6 +677,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 
 	defer func() {
 		s.mu.Lock()
+		s.streamCallback = nil
 		log.Printf("[SESSION-END] turns=%d tool_calls=%d autofixes=%d errors=%d duration=%dms",
 			s.turnCount, s.toolCallCount, s.autofixCount, s.errorCount, time.Since(turnStart).Milliseconds())
 		s.mu.Unlock()
@@ -622,6 +686,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 	var toolErrors []string
 	lastErrTool := ""
 	consecutiveErrs := 0
+	unparsedRetries := 0
 	var ctxCancels []context.CancelFunc
 	defer func() {
 		for _, c := range ctxCancels {
@@ -646,15 +711,25 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				break
 			}
 			log.Printf("[AGENT-STREAM] model error (attempt %d/3): %v — retrying", attempt+1, err)
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			select {
+			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+			if ctx.Err() != nil {
+				break
+			}
 		}
 		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				msg := fmt.Sprintf("[Timeout at iteration %d]", i+1)
 				if onChunk != nil {
 					onChunk(msg)
 				}
 				return msg, nil
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", ctx.Err()
 			}
 			return "", fmt.Errorf("model: %w", err)
 		}
@@ -662,18 +737,26 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 		reply := repairCutoffResponse(replyMsg.Content)
 		toolCalls, commentary := model.ParseToolCalls(reply)
 
-		if commentary != "" && onChunk != nil {
+		if commentary != "" && onChunk != nil && len(toolCalls) > 0 {
 			onChunk("__COMMENTARY:" + commentary + "__\n")
 		}
 
 		if len(toolCalls) == 0 {
-			if looksLikeUnparsedToolCalls(reply) {
-				log.Printf("[AGENT-STREAM] reply looks like unparsed tool_calls block — asking model to retry cleanly")
+			if looksLikeUnparsedToolCalls(reply) && unparsedRetries < 2 {
+				unparsedRetries++
+				log.Printf("[AGENT-STREAM] reply looks like unparsed tool_calls block (retry %d/2)", unparsedRetries)
+				if onChunk != nil {
+					onChunk("__COMMENTARY:retrying tool-call format__\n")
+				}
 				s.mu.Lock()
 				s.history = append(s.history, model.Message{Role: "assistant", Content: reply})
 				s.history = append(s.history, model.Message{Role: "user", Content: "[FORMAT ERROR] Your last reply contained tool-call JSON that the harness could not parse (likely a syntax error inside the args). Re-emit ONLY a valid ```tool_calls fenced block. Do not include the previous text or prose — just the corrected block."})
 				s.mu.Unlock()
 				continue
+			}
+			if looksLikeUnparsedToolCalls(reply) {
+				log.Printf("[AGENT-STREAM] giving up after %d unparsed-tool-calls retries — stripping fences and rendering plain text", unparsedRetries)
+				reply = stripBrokenToolCallsFences(reply)
 			}
 			finalReply := cleanReply(reply)
 			s.mu.Lock()
@@ -685,7 +768,7 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 				copy(snapshot, s.history)
 			}
 			s.mu.Unlock()
-			if onChunk != nil && commentary == "" {
+			if onChunk != nil {
 				onChunk(finalReply)
 			}
 			if strings.HasPrefix(senderID, "web_") {
@@ -819,13 +902,27 @@ func (s *AgentSession) RunStream(ctx context.Context, senderID, userText string,
 			lastErrTool = ""
 		}
 		if consecutiveErrs >= 2 {
-			bail := fmt.Sprintf("[LOOP_BREAKER]\nTool '%s' failed in %d consecutive turns. Stop and tell the user plainly what went wrong.", lastErrTool, consecutiveErrs)
+			s.mu.Lock()
+			s.history = append(s.history, model.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("Tool '%s' has failed %d times in a row. Stop using it. In 1-2 plain sentences tell the user what went wrong and suggest a different approach. No markers, no JSON.", lastErrTool, consecutiveErrs),
+			})
+			history := make([]model.Message, len(s.history))
+			copy(history, s.history)
+			s.mu.Unlock()
+			explainCtx, explainCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			summary, sumErr := s.client.Send(explainCtx, s.model, history)
+			explainCancel()
+			var bail string
+			if sumErr == nil {
+				bail = cleanReply(summary.Content)
+			}
+			if strings.TrimSpace(bail) == "" {
+				bail = fmt.Sprintf("Tool '%s' kept failing. Try a different approach.", lastErrTool)
+			}
 			if onChunk != nil {
 				onChunk(bail)
 			}
-			s.mu.Lock()
-			s.history = append(s.history, model.Message{Role: "user", Content: bail})
-			s.mu.Unlock()
 			return bail, nil
 		}
 	}
@@ -1014,6 +1111,15 @@ func sanitizeToolName(n string) string {
 // executeToolSafely wraps a tool invocation with panic recovery and an
 // enforced wall-clock timeout. If the tool's Execute panics or blocks past
 // its Timeout, we return an "Error:" string instead of crashing the agent.
+//
+// IMPORTANT: on timeout we return while the tool goroutine is still running
+// (it is orphaned, not cancelled — ToolDef has no ctx hook today). The done
+// channel is buffered so the orphan's send never blocks, but the goroutine
+// itself keeps executing. Tool implementations MUST NOT mutate AgentSession
+// state (s.mu-guarded fields, history, caches) from background work that may
+// outlive Execute's return; do all session writes synchronously before
+// returning the result string. Long-running tools that need cancellation
+// should poll a tool-owned context, not session state.
 func (s *AgentSession) executeToolSafely(def *tools.ToolDef, args map[string]any, senderID string) (out string) {
 	timeout := def.Timeout
 	if timeout == 0 {
@@ -1202,9 +1308,19 @@ func isToolError(result string) bool {
 
 // toolLabel returns a short human-readable description of a tool call.
 func toolLabel(name, argsJSON string) string {
-	var args map[string]string
+	var args map[string]any
 	json.Unmarshal([]byte(argsJSON), &args)
 
+	str := func(k string) string {
+		v, ok := args[k]
+		if !ok || v == nil {
+			return ""
+		}
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return fmt.Sprint(v)
+	}
 	short := func(s string, n int) string {
 		if len(s) > n {
 			return s[:n] + "..."
@@ -1222,49 +1338,57 @@ func toolLabel(name, argsJSON string) string {
 
 	switch name {
 	case "exec":
-		if cmd := args["cmd"]; cmd != "" {
+		if cmd := str("cmd"); cmd != "" {
 			return "run: " + short(cmd, 60)
 		}
 	case "run_python":
-		if code := args["code"]; code != "" {
+		if code := str("code"); code != "" {
 			first := strings.SplitN(strings.TrimSpace(code), "\n", 2)[0]
 			return "python: " + short(first, 60)
 		}
 	case "write_file":
-		if p := args["path"]; p != "" {
+		if p := str("path"); p != "" {
 			return "write " + filepath.Base(p)
 		}
 	case "append_file":
-		if p := args["path"]; p != "" {
+		if p := str("path"); p != "" {
 			return "append " + filepath.Base(p)
 		}
 	case "read_file":
-		if p := args["path"]; p != "" {
+		if p := str("path"); p != "" {
 			return "read " + filepath.Base(p)
 		}
 	case "web_fetch", "http_request", "tavily_extract":
-		if u := args["url"]; u != "" {
+		if u := str("url"); u != "" {
 			return "fetch " + domain(u)
 		}
 	case "tavily_search", "web_search":
-		if q := args["query"]; q != "" {
+		if q := str("query"); q != "" {
 			return "search: " + short(q, 50)
 		}
 	case "github_read_file":
-		if p := args["path"]; p != "" {
+		if p := str("path"); p != "" {
 			return "github: " + short(p, 50)
 		}
 	case "tg_send_message":
 		return "send TG message"
+	case "tg_send_photo":
+		return "send TG photo"
+	case "tg_send_album":
+		return "send TG album"
 	case "tg_send_file":
 		return "send TG file"
+	case "tg_send_voice":
+		return "send TG voice"
+	case "tg_send_video":
+		return "send TG video"
 	case "wa_send_message":
-		if j := args["jid"]; j != "" {
+		if j := str("jid"); j != "" {
 			return "WA → " + j
 		}
 		return "send WA message"
 	case "wa_send_file":
-		if j := args["jid"]; j != "" {
+		if j := str("jid"); j != "" {
 			return "WA file → " + j
 		}
 		return "send WA file"
@@ -1273,19 +1397,23 @@ func toolLabel(name, argsJSON string) string {
 	case "wa_get_groups":
 		return "WA groups"
 	case "schedule_task":
-		if l := args["label"]; l != "" {
+		if l := str("label"); l != "" {
 			return "schedule: " + l
 		}
 	case "deep_work":
 		return "planning"
 	case "progress":
-		if m := args["message"]; m != "" {
+		if m := str("message"); m != "" {
 			return short(m, 60)
 		}
 	}
-	// Fallback: show name + first arg value if any, so label is never bare "exec"
-	for _, v := range args {
-		if v != "" {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if v := str(k); v != "" {
 			return name + ": " + short(v, 50)
 		}
 	}
@@ -1301,6 +1429,21 @@ func repairCutoffResponse(s string) string {
 		s = strings.TrimSpace(s) + "</tool_call>"
 	}
 	return s
+}
+
+var (
+	reBrokenToolCallsFence   = regexp.MustCompile("(?is)```tool_calls\\s*.*?```")
+	reBrokenToolResultsFence = regexp.MustCompile("(?is)```tool_results\\s*.*?```")
+	reBrokenBodyFence        = regexp.MustCompile("(?is)```body:[A-Za-z0-9_-]+\\s*.*?```")
+	reBrokenJSONFence        = regexp.MustCompile("(?is)```(?:json)?\\s*(?:\\[|\\{)[\\s\\S]*?```")
+)
+
+func stripBrokenToolCallsFences(s string) string {
+	s = reBrokenToolCallsFence.ReplaceAllString(s, "")
+	s = reBrokenToolResultsFence.ReplaceAllString(s, "")
+	s = reBrokenBodyFence.ReplaceAllString(s, "")
+	s = reBrokenJSONFence.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 func looksLikeUnparsedToolCalls(s string) bool {
@@ -1332,6 +1475,20 @@ func cleanReply(s string) string {
 		}
 		s = s[:start] + s[end+len("</think>"):]
 	}
+	if idx := strings.Index(s, "</think>"); idx != -1 {
+		s = s[idx+len("</think>"):]
+	}
+	if idx := strings.Index(s, "<think>"); idx != -1 {
+		head := strings.TrimSpace(s[:idx])
+		tail := strings.TrimSpace(s[idx+len("<think>"):])
+		if head != "" {
+			s = head
+		} else {
+			s = tail
+		}
+	}
+	s = reBrokenToolResultsFence.ReplaceAllString(s, "")
+	s = reBrokenBodyFence.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 
@@ -1341,6 +1498,36 @@ var agentSessions = struct {
 	sync.RWMutex
 	m map[string]*AgentSession
 }{m: make(map[string]*AgentSession)}
+
+const sessionIdleTTL = 2 * time.Hour
+const sessionStuckBusyTTL = 30 * time.Minute
+
+func init() {
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			now := time.Now().UnixNano()
+			idleCutoff := now - int64(sessionIdleTTL)
+			stuckCutoff := now - int64(sessionStuckBusyTTL)
+			agentSessions.Lock()
+			for k, s := range agentSessions.m {
+				lastUsed := s.lastUsed.Load()
+				if s.turnBusy.Load() {
+					if lastUsed < stuckCutoff {
+						log.Printf("[SESSION-GC] evicting stuck-busy session key=%s idle=%v", k, time.Duration(now-lastUsed))
+						delete(agentSessions.m, k)
+					}
+					continue
+				}
+				if lastUsed < idleCutoff {
+					delete(agentSessions.m, k)
+				}
+			}
+			agentSessions.Unlock()
+		}
+	}()
+}
 
 // tryGetAgentSession returns the existing session for key, or nil if none
 // has been created yet. Unlike GetOrCreateAgentSession this never allocates.
@@ -1355,6 +1542,7 @@ func GetOrCreateAgentSession(key string) *AgentSession {
 	s, ok := agentSessions.m[key]
 	agentSessions.RUnlock()
 	if ok {
+		s.lastUsed.Store(time.Now().UnixNano())
 		return s
 	}
 	platform := "telegram"
@@ -1363,19 +1551,24 @@ func GetOrCreateAgentSession(key string) *AgentSession {
 	} else if strings.HasPrefix(key, "wa_") {
 		platform = "whatsapp"
 	}
-	s = NewAgentSession(GlobalRegistry, Cfg.DefaultModel, platform)
+	candidate := NewAgentSession(GlobalRegistry, Cfg.DefaultModel, platform)
 	if platform == "web" {
 		sessionID := strings.TrimPrefix(key, "web_")
 		if hist := LoadSession(sessionID); len(hist) > 0 {
-			s.mu.Lock()
-			s.history = append(s.history, hist...)
-			s.mu.Unlock()
+			candidate.mu.Lock()
+			candidate.history = append(candidate.history, hist...)
+			candidate.mu.Unlock()
 		}
 	}
 	agentSessions.Lock()
-	agentSessions.m[key] = s
+	if existing, ok := agentSessions.m[key]; ok {
+		agentSessions.Unlock()
+		existing.lastUsed.Store(time.Now().UnixNano())
+		return existing
+	}
+	agentSessions.m[key] = candidate
 	agentSessions.Unlock()
-	return s
+	return candidate
 }
 
 func DeleteAgentSession(key string) {

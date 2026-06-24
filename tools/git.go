@@ -223,6 +223,7 @@ var GitCommit = &ToolDef{
 	Name:        "git_commit",
 	Description: "Create a git commit. Optionally stages all changes first (add_all). Owner-only.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     30 * time.Second,
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
@@ -297,6 +298,7 @@ var GitCheckout = &ToolDef{
 	Name:        "git_checkout",
 	Description: "Check out a git ref (branch, tag, or commit). Owner-only.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     30 * time.Second,
 	MaxOutput:   8 * 1024,
 	Args: []ToolArg{
@@ -326,6 +328,7 @@ var GitPull = &ToolDef{
 	Name:        "git_pull",
 	Description: "Pull changes from a remote. Owner-only.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     90 * time.Second,
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
@@ -360,6 +363,7 @@ var GitPush = &ToolDef{
 	Name:        "git_push",
 	Description: "Push changes to a remote. Owner-only.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     90 * time.Second,
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{

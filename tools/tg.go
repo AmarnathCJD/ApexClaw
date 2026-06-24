@@ -154,6 +154,7 @@ var TGSendMessage = &ToolDef{
 	Name:        "tg_send_message",
 	Description: "Send a Telegram message. Supports HTML formatting, replies (with quoted snippet), silent send, native scheduled send, client-side self-destruct, post-send reaction, and message forwarding. When forward_from and forward_msg_ids are set, text/reply_to are ignored.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "text", Type: ArgString, Description: "Message text (HTML allowed). Ignored when forwarding.", Required: false},
 		{Name: "target", Type: ArgString, Description: "Destination chat ID, @username, or 'me'. Omit for current chat.", Required: false},
@@ -207,7 +208,8 @@ var TGSendFile = &ToolDef{
 	Description: "Send a local file to a Telegram chat. Images (jpg/png/gif/webp) and videos (mp4/avi/mkv/mov/webm) " +
 		"are sent as media by default. All other files are sent as documents. " +
 		"Set doc=true to force document mode regardless of file type. Omit target for current chat.",
-	Secure: true,
+	Secure:     true,
+	Sequential: true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "Absolute path of the file", Required: true},
 		{Name: "caption", Type: ArgString, Description: "Optional caption", Required: false},
@@ -243,6 +245,7 @@ var TGSendPhoto = &ToolDef{
 	Name:        "tg_send_photo",
 	Description: "Send a photo from local path or Telegram FileID. Omit target for current chat.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "Local path or Telegram FileID", Required: true},
 		{Name: "caption", Type: ArgString, Description: "Optional caption", Required: false},
@@ -271,6 +274,7 @@ var TGSendAlbum = &ToolDef{
 	Name:        "tg_send_album",
 	Description: "Send multiple photos/videos as an album (media group). Paths comma-separated or array. Omit target for current chat.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "paths", Type: ArgList, Description: "List of local file paths or URLs (comma-separated or array)", Required: true},
 		{Name: "caption", Type: ArgString, Description: "Optional caption for the album", Required: false},
@@ -309,6 +313,7 @@ var TGSendLocation = &ToolDef{
 	Name:        "tg_send_location",
 	Description: "Send a location pin to a Telegram chat. Omit target for current chat.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "lat", Type: ArgFloat, Description: "Latitude (e.g. 37.7749)", Required: true},
 		{Name: "long", Type: ArgFloat, Description: "Longitude (e.g. -122.4194)", Required: true},
@@ -339,7 +344,8 @@ var TGSendMessageWithButtons = &ToolDef{
 	Description: "Send a Telegram message with inline buttons. buttons must be base64-encoded JSON. " +
 		"Format: {\"rows\":[{\"buttons\":[{\"text\":\"Yes\",\"type\":\"data\",\"data\":\"yes\",\"style\":\"success\"}]}]}. " +
 		"Styles: success(green), danger(red), primary(blue). Type: data(callback) or url(link).",
-	Secure: true,
+	Secure:     true,
+	Sequential: true,
 	Args: []ToolArg{
 		{Name: "text", Type: ArgString, Description: "Message text", Required: true},
 		{Name: "buttons", Type: ArgString, Description: "Buttons as BASE64-ENCODED JSON", Required: false},
@@ -369,7 +375,8 @@ var TGSendMessageWithButtons = &ToolDef{
 }
 
 var TGSendRich = &ToolDef{
-	Name: "tg_send_rich",
+	Name:       "tg_send_rich",
+	Sequential: true,
 	Description: "Send a Telegram rich-page message with collapsible sections, tables, quotes, and paragraphs. " +
 		"Use this when the answer is long or has multiple sections — fold details behind collapsibles so the chat stays clean. " +
 		"blocks must be BASE64-ENCODED JSON array of block objects. Block types: " +
@@ -525,7 +532,7 @@ var TGForwardMsg = &ToolDef{
 var TGDeleteMsg = &ToolDef{
 	Name:        "tg_delete_msg",
 	Description: "Delete messages from a chat. Omit chat_id for current chat. Omit message_ids to delete replied-to message.",
-	Secure:      false,
+	Secure:      true,
 	Args: []ToolArg{
 		{Name: "chat_id", Type: ArgString, Description: "Chat ID or @username. Omit for current chat.", Required: false},
 		{Name: "message_ids", Type: ArgList, Description: "Message IDs (comma-separated or array). Omit to delete replied-to message.", Required: false},

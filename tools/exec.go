@@ -25,6 +25,7 @@ var Exec = &ToolDef{
 	Name:        "exec",
 	Description: "Run a shell/system command. Returns combined stdout+stderr. Auto-detects long-running commands (npm install, pip install, etc) and increases timeout.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     -1, // tool manages its own timeout internally (up to 10 min for installs)
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
@@ -114,6 +115,7 @@ var ExecChain = &ToolDef{
 	Name:        "exec_chain",
 	Description: "Execute multiple shell commands in sequence. Returns all outputs. Stops on first error by default. Saves iterations for multi-step CLI tasks.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     -1,
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
@@ -195,6 +197,7 @@ var RunPython = &ToolDef{
 	Name:        "run_python",
 	Description: "Execute a Python code snippet. Writes to a temp file and runs with python3. Returns stdout+stderr. Timeout is 60s.",
 	Secure:      true,
+	Sequential:  true,
 	Timeout:     -1,
 	MaxOutput:   16 * 1024,
 	Args: []ToolArg{
@@ -226,16 +229,16 @@ var RunPython = &ToolDef{
 
 		result := strings.TrimSpace(out.String())
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("⏱️ Python timed out (60s).\n%s", result)
+			return fmt.Sprintf("Error: python timed out (60s).\n%s", result)
 		}
 		if err != nil {
-			return fmt.Sprintf("❌ Python error: %v\n%s", err, result)
+			return fmt.Sprintf("Error: python: %v\n%s", err, result)
 		}
 		if len(result) > 8000 {
 			result = result[:8000] + "\n...(truncated)"
 		}
 		if result == "" {
-			return "✅ (no output)"
+			return "(no output)"
 		}
 		return result
 	},

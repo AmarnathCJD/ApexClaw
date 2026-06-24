@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -592,6 +591,26 @@ type zaiPartState struct {
 	images []string
 }
 
+func dedupContiguousParagraphs(s string) string {
+	if s == "" {
+		return s
+	}
+	paras := strings.Split(s, "\n\n")
+	out := make([]string, 0, len(paras))
+	var prev string
+	for _, p := range paras {
+		norm := strings.TrimSpace(p)
+		if norm != "" && norm == prev {
+			continue
+		}
+		out = append(out, p)
+		if norm != "" {
+			prev = norm
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
 func zaiParseStream(r io.Reader) (*ZAIResult, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -641,7 +660,21 @@ func zaiParseStream(r io.Reader) (*ZAIResult, error) {
 				parts[key] = st
 				order = append(order, key)
 			}
-			st.text, st.think = "", ""
+			hasText, hasThink := false, false
+			for _, c := range part.Content {
+				if c.Type == "text" && c.Text != "" {
+					hasText = true
+				}
+				if c.Type == "think" && (c.Think != "" || c.Text != "") {
+					hasThink = true
+				}
+			}
+			if hasText {
+				st.text = ""
+			}
+			if hasThink {
+				st.think = ""
+			}
 			for _, c := range part.Content {
 				switch c.Type {
 				case "text":
@@ -669,16 +702,18 @@ func zaiParseStream(r io.Reader) (*ZAIResult, error) {
 		return nil, err
 	}
 
-	sort.Strings(order)
 	var texts []string
+	seenText := map[string]bool{}
 	for _, k := range order {
 		st := parts[k]
-		if t := strings.TrimSpace(st.text); t != "" {
+		t := strings.TrimSpace(st.text)
+		if t != "" && !seenText[t] {
 			texts = append(texts, t)
+			seenText[t] = true
 		}
 		res.ImageURLs = append(res.ImageURLs, st.images...)
 	}
-	res.Text = strings.TrimSpace(strings.Join(texts, "\n\n"))
+	res.Text = dedupContiguousParagraphs(strings.TrimSpace(strings.Join(texts, "\n\n")))
 
 	if res.Text == "" && len(res.ImageURLs) == 0 {
 		var thinkFallback string

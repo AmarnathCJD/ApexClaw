@@ -45,9 +45,6 @@ var WebFetch = &ToolDef{
 			return fmt.Sprintf("Error reading body: %v", err)
 		}
 		text := strings.TrimSpace(string(body))
-		if len(text) > 6000 {
-			text = text[:6000] + "\n...(truncated)"
-		}
 		return fmt.Sprintf("HTTP %d\n\n%s", resp.StatusCode, text)
 	},
 }

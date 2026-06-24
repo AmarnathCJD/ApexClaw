@@ -135,16 +135,21 @@ func SafeFilePath(raw string) (string, error) {
 	if root == "" {
 		return abs, nil
 	}
-	// Resolve symlinks where possible so a symlink inside the sandbox can't
-	// point at /etc/shadow.
+	check := abs
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
+		check = resolved
+	} else if parent, perr := filepath.EvalSymlinks(filepath.Dir(abs)); perr == nil {
+		check = filepath.Join(parent, filepath.Base(abs))
 	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+	resolvedRoot := root
+	if rr, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = rr
+	}
+	rel, err := filepath.Rel(resolvedRoot, check)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes sandbox %q", raw, root)
 	}
-	return abs, nil
+	return check, nil
 }
 
 func contextWithTimeout() (context.Context, context.CancelFunc) {

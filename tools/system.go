@@ -168,6 +168,7 @@ var UpdateClaw = &ToolDef{
 	Name:        "update_claw",
 	Description: "Update ApexClaw. Uses git pull/build if in a git repo, otherwise tells you how to update. (sudo only)",
 	Secure:      true,
+	Sequential:  true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]any) string {
 		var sb strings.Builder
@@ -219,6 +220,7 @@ var RestartClaw = &ToolDef{
 	Name:        "restart_claw",
 	Description: "Restarts the ApexClaw process (sudo only)",
 	Secure:      true,
+	Sequential:  true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]any) string {
 		binName := "./apexclaw"
@@ -251,6 +253,7 @@ var KillClaw = &ToolDef{
 	Name:        "kill_claw",
 	Description: "Immediately shuts down the ApexClaw process (sudo only)",
 	Secure:      true,
+	Sequential:  true,
 	Args:        []ToolArg{},
 	Execute: func(args map[string]any) string {
 		go func() {

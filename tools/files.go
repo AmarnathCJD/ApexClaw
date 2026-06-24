@@ -130,7 +130,7 @@ var ReadFile = &ToolDef{
 			return fmt.Sprintf("Error: start_line %d > end_line %d", start, end)
 		}
 
-		const maxLines = 400
+		const maxLines = 1000
 		slice := lines[start-1 : end]
 		truncated := false
 		if len(slice) > maxLines {
@@ -161,7 +161,8 @@ var WriteFile = &ToolDef{
 	Description: "Write or overwrite a file. Creates parent directories automatically. " +
 		"Backs up existing files to <path>.bak before overwriting. " +
 		"Set backup=false to skip backup. Returns byte count and line count on success.",
-	Secure: true,
+	Secure:     true,
+	Sequential: true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "File path to write to", Required: true},
 		{Name: "content", Type: ArgString, Description: "Content to write", Required: true},
@@ -183,8 +184,7 @@ var WriteFile = &ToolDef{
 			return fmt.Sprintf("Error creating directories: %v", err)
 		}
 
-		// Backup existing file
-		doBackup := BoolOr(args, "backup", true)
+		doBackup := BoolOr(args, "backup", false)
 		if doBackup {
 			if _, err := os.Stat(path); err == nil {
 				if err := copyFile(path, path+".bak"); err != nil {
@@ -204,7 +204,8 @@ var WriteFile = &ToolDef{
 // ─── edit_file ────────────────────────────────────────────────────────────────
 
 var EditFile = &ToolDef{
-	Name: "edit_file",
+	Name:       "edit_file",
+	Sequential: true,
 	Description: "Make targeted edits to a file without rewriting the whole thing. " +
 		"Modes:\n" +
 		"  replace_lines  — replace lines start_line..end_line with new content\n" +
@@ -377,6 +378,7 @@ var AppendFile = &ToolDef{
 	Name:        "append_file",
 	Description: "Append text to an existing file (creates if not exists). Adds a newline separator if the file doesn't end with one.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "File path to append to", Required: true},
 		{Name: "content", Type: ArgString, Description: "Content to append", Required: true},
@@ -631,6 +633,7 @@ var CreateDir = &ToolDef{
 	Name:        "create_dir",
 	Description: "Create a directory (and any missing parent directories)",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "Directory path to create", Required: true},
 	},
@@ -657,6 +660,7 @@ var DeleteFile = &ToolDef{
 	Name:        "delete_file",
 	Description: "Delete a file or an empty directory. Use recursive=true to delete a directory and all contents.",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "path", Type: ArgString, Description: "File or directory path to delete", Required: true},
 		{Name: "recursive", Type: ArgBool, Description: "Delete directory recursively (true/false, default: false)", Required: false},
@@ -689,6 +693,7 @@ var MoveFile = &ToolDef{
 	Name:        "move_file",
 	Description: "Move or rename a file or directory",
 	Secure:      true,
+	Sequential:  true,
 	Args: []ToolArg{
 		{Name: "src", Type: ArgString, Description: "Source path", Required: true},
 		{Name: "dst", Type: ArgString, Description: "Destination path", Required: true},

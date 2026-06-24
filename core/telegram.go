@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -39,6 +40,8 @@ var (
 
 	inlineQueryMu sync.Mutex
 	inlineQueries = make(map[string]string) // shortID -> full query text
+
+	reTrailingAck = regexp.MustCompile(`(?i)^(done|sent|shared|posted|delivered|ok|okay|sure)[.! ]*$`)
 )
 
 func setTelegramContext(userID string, ctx map[string]any) {
@@ -381,7 +384,9 @@ func (b *TelegramBot) Start() error {
 			"chat_type":       "private",
 			"inline_query":    query,
 		}
-		setTelegramContext(userID, ctx)
+		requestID := fmt.Sprintf("%s:%d:%d", userID, is.ChatID(), is.MessageID())
+		setTelegramContext(requestID, ctx)
+		defer deleteTelegramContext(requestID)
 		ctxPrefix := formatTGContext(ctx)
 		fullMsg := query
 		if ctxPrefix != "" {
@@ -393,7 +398,7 @@ func (b *TelegramBot) Start() error {
 
 		session := GetOrCreateAgentSession(userID)
 
-		result, err := session.RunStream(timeoutCtx, userID, fullMsg, func(string) {})
+		result, err := session.RunStream(timeoutCtx, requestID, fullMsg, func(string) {})
 		if err != nil {
 			log.Printf("[TG] inline agent error for %s: %v", userID, err)
 			is.Edit("Error: Something went wrong processing your query.")
@@ -474,7 +479,9 @@ func (b *TelegramBot) Start() error {
 			ctx["chat_type"] = "group/channel"
 			ctx["group_id"] = c.ChatID
 		}
-		setTelegramContext(userID, ctx)
+		requestID := fmt.Sprintf("%s:%d:%d", userID, c.ChatID, c.MessageID)
+		setTelegramContext(requestID, ctx)
+		defer deleteTelegramContext(requestID)
 		cbCtxPrefix := formatTGContext(ctx)
 		cbMsg := fmt.Sprintf("[Button clicked: %s]", callbackData)
 		if cbCtxPrefix != "" {
@@ -482,10 +489,10 @@ func (b *TelegramBot) Start() error {
 		}
 
 		session := GetOrCreateAgentSession(userID)
-		onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), userID)
+		onChunk, _, done := b.newStreamHandler(c.ChatID, int64(c.MessageID), requestID)
 		cbCtx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 		defer cancel()
-		_, err := session.RunStream(cbCtx, userID, cbMsg, onChunk)
+		_, err := session.RunStream(cbCtx, requestID, cbMsg, onChunk)
 		done()
 
 		if err != nil {
@@ -586,6 +593,8 @@ var recentlyHandled = struct {
 	ids map[string]time.Time
 }{ids: make(map[string]time.Time)}
 
+const recentlyHandledMaxSize = 5000
+
 func alreadyHandled(chatID int64, msgID int32) bool {
 	key := fmt.Sprintf("%d:%d", chatID, msgID)
 	recentlyHandled.Lock()
@@ -594,6 +603,21 @@ func alreadyHandled(chatID int64, msgID int32) bool {
 	for k, t := range recentlyHandled.ids {
 		if now.Sub(t) > 2*time.Minute {
 			delete(recentlyHandled.ids, k)
+		}
+	}
+	if len(recentlyHandled.ids) > recentlyHandledMaxSize {
+		type kv struct {
+			k string
+			t time.Time
+		}
+		all := make([]kv, 0, len(recentlyHandled.ids))
+		for k, t := range recentlyHandled.ids {
+			all = append(all, kv{k, t})
+		}
+		slices.SortFunc(all, func(a, b kv) int { return a.t.Compare(b.t) })
+		drop := len(all) / 4
+		for i := 0; i < drop; i++ {
+			delete(recentlyHandled.ids, all[i].k)
 		}
 	}
 	if _, ok := recentlyHandled.ids[key]; ok {
@@ -702,6 +726,9 @@ func (b *TelegramBot) handleText(m *telegram.NewMessage, text string) error {
 
 	if err != nil {
 		done()
+		if errors.Is(err, ErrBusy) || errors.Is(err, context.Canceled) {
+			return nil
+		}
 		log.Printf("[TG] agent error for %s: %v", userID, err)
 		b.safeSendText(m.ChatID(), 0, friendlyErrorMessage(err))
 		return nil
@@ -776,7 +803,9 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 
 	log.Printf("[TG] transcribed: %q", transcribed)
 	voiceMsgCtx := buildMsgContext(m, userID, nil)
-	setTelegramContext(userID, voiceMsgCtx)
+	requestID := fmt.Sprintf("%s:%d:%d", userID, m.ChatID(), m.ID)
+	setTelegramContext(requestID, voiceMsgCtx)
+	defer deleteTelegramContext(requestID)
 	voiceCtxPrefix := formatTGContext(voiceMsgCtx)
 	if voiceCtxPrefix != "" {
 		transcribed = voiceCtxPrefix + "\n" + transcribed
@@ -786,8 +815,8 @@ func (b *TelegramBot) handleVoice(m *telegram.NewMessage) error {
 	defer cancel()
 
 	session := GetOrCreateAgentSession(userID)
-	onChunk, _, done := b.newStreamHandler(m.ChatID(), int64(m.ID), userID)
-	_, err = session.RunStream(timeoutCtx, userID, transcribed, onChunk)
+	onChunk, _, done := b.newStreamHandler(m.ChatID(), int64(m.ID), requestID)
+	_, err = session.RunStream(timeoutCtx, requestID, transcribed, onChunk)
 	done()
 
 	if err != nil {
@@ -834,7 +863,9 @@ func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 		"file_name": fileName,
 		"file_path": filePath,
 	})
-	setTelegramContext(userID, fileMsgCtx)
+	requestID := fmt.Sprintf("%s:%d:%d", userID, m.ChatID(), m.ID)
+	setTelegramContext(requestID, fileMsgCtx)
+	defer deleteTelegramContext(requestID)
 	fileCtxPrefix := formatTGContext(fileMsgCtx)
 	if fileCtxPrefix != "" {
 		caption = fileCtxPrefix + "\n" + caption
@@ -857,7 +888,7 @@ func (b *TelegramBot) handleFile(m *telegram.NewMessage) error {
 		}
 	}
 
-	if _, err = session.Run(ctx, userID, caption); err != nil {
+	if _, err = session.Run(ctx, requestID, caption); err != nil {
 		log.Printf("[TG] agent error for file: %v", err)
 		_, _ = m.Reply(friendlyErrorMessage(err))
 	}
@@ -934,20 +965,31 @@ func cleanResultForTelegram(result string) string {
 	return strings.TrimSpace(result)
 }
 
-var allowedTagsRe = regexp.MustCompile(`(?i)(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|spoiler)>|<a href="[^"]*">|<code class="[^"]*">|<pre language="[^"]*">|<span class="tg-spoiler">|</span>)`)
+var (
+	allowedTagsRe   = regexp.MustCompile(`(?i)(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|spoiler)>|<a href="[^"]*">|<code class="[^"]*">|<pre language="[^"]*">|<span class="tg-spoiler">|</span>)`)
+	reMdTable       = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`)
+	reMdBoldStar    = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`)
+	reMdBoldUnder   = regexp.MustCompile(`(?s)__(.*?)__`)
+	reMdItalicStar  = regexp.MustCompile(`(?s)\*(.*?)\*`)
+	reMdCodeBlock   = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n?(.*?)```")
+	reMdInlineCode  = regexp.MustCompile("(?s)`([^`]+)`")
+	reMdHeading     = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
+	reMdLink        = regexp.MustCompile(`(?:\[([^\]]+)\])\(([^)]+)\)`)
+	reExtraNewlines = regexp.MustCompile(`\n{3,}`)
+)
 
 func stripMarkdown(s string) string {
-	s = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`).ReplaceAllStringFunc(s, func(table string) string {
+	s = reMdTable.ReplaceAllStringFunc(s, func(table string) string {
 		return "<pre>\n" + strings.TrimSpace(table) + "\n</pre>\n"
 	})
 
-	s = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`).ReplaceAllString(s, "<b>$1</b>")
-	s = regexp.MustCompile(`(?s)__(.*?)__`).ReplaceAllString(s, "<b>$1</b>")
-	s = regexp.MustCompile(`(?s)\*(.*?)\*`).ReplaceAllString(s, "<i>$1</i>")
-	s = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n?(.*?)```").ReplaceAllString(s, "<pre>$1</pre>")
-	s = regexp.MustCompile("(?s)`([^`]+)`").ReplaceAllString(s, "<code>$1</code>")
-	s = regexp.MustCompile(`(?m)^#+\s+(.*)$`).ReplaceAllString(s, "<b>$1</b>")
-	s = regexp.MustCompile(`(?:\[([^\]]+)\])\(([^)]+)\)`).ReplaceAllString(s, "<a href=\"$2\">$1</a>")
+	s = reMdBoldStar.ReplaceAllString(s, "<b>$1</b>")
+	s = reMdBoldUnder.ReplaceAllString(s, "<b>$1</b>")
+	s = reMdItalicStar.ReplaceAllString(s, "<i>$1</i>")
+	s = reMdCodeBlock.ReplaceAllString(s, "<pre>$1</pre>")
+	s = reMdInlineCode.ReplaceAllString(s, "<code>$1</code>")
+	s = reMdHeading.ReplaceAllString(s, "<b>$1</b>")
+	s = reMdLink.ReplaceAllString(s, "<a href=\"$2\">$1</a>")
 	s = strings.ReplaceAll(s, "`", "")
 
 	var mapping []string
@@ -963,7 +1005,7 @@ func stripMarkdown(s string) string {
 		escaped = strings.Replace(escaped, placeholder, tag, 1)
 	}
 
-	escaped = regexp.MustCompile(`\n{3,}`).ReplaceAllString(escaped, "\n\n")
+	escaped = reExtraNewlines.ReplaceAllString(escaped, "\n\n")
 
 	return strings.TrimSpace(escaped)
 }
@@ -1141,7 +1183,11 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		if text == lastEditText {
 			return
 		}
-		shouldEdit := force || time.Since(lastEditAt) > 1500*time.Millisecond
+		minGap := 1500 * time.Millisecond
+		if force {
+			minGap = 1100 * time.Millisecond
+		}
+		shouldEdit := time.Since(lastEditAt) > minGap
 		if shouldEdit {
 			b.client.EditMessage(chatID, progressMsgID, text, &telegram.SendOptions{ParseMode: telegram.HTML})
 			lastEditAt = time.Now()
@@ -1243,30 +1289,109 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 
 	flush := func() {}
 
+	var doneOnce sync.Once
 	done := func() {
+		doneOnce.Do(func() {
+			doneImpl(b, chatID, replyToMsgID, senderID, &progressMsgID, &finalBuf, &sentDirect, &mu)
+		})
+	}
+	return onChunk, flush, done
+}
+
+func splitAtSafeBoundary(s string, maxLen int) (string, string) {
+	if len(s) <= maxLen {
+		return s, ""
+	}
+	tryAt := func(sep string) (int, bool) {
+		idx := maxLen
+		for {
+			cut := strings.LastIndex(s[:idx], sep)
+			if cut < 100 {
+				return 0, false
+			}
+			if balancedTags(s[:cut]) {
+				return cut, true
+			}
+			idx = cut
+		}
+	}
+	if cut, ok := tryAt("\n\n"); ok {
+		return s[:cut], s[cut:]
+	}
+	if cut, ok := tryAt("\n"); ok {
+		return s[:cut], s[cut:]
+	}
+	if cut, ok := tryAt(" "); ok {
+		return s[:cut], s[cut:]
+	}
+	window := s[:maxLen]
+	if lastClose := strings.LastIndex(window, ">"); lastClose >= 100 && balancedTags(s[:lastClose+1]) {
+		return s[:lastClose+1], s[lastClose+1:]
+	}
+	return s[:maxLen], s[maxLen:]
+}
+
+func balancedTags(s string) bool {
+	open, closeCount := 0, 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '<' {
+			continue
+		}
+		end := strings.IndexByte(s[i:], '>')
+		if end < 0 {
+			return false
+		}
+		if i+1 < len(s) && s[i+1] == '/' {
+			closeCount++
+		} else {
+			open++
+		}
+		i += end
+	}
+	return open == closeCount
+}
+
+func doneImpl(
+	b *TelegramBot,
+	chatID int64,
+	replyToMsgID int64,
+	senderID string,
+	progressMsgIDPtr *int32,
+	finalBuf *strings.Builder,
+	sentDirectPtr *bool,
+	mu *sync.Mutex,
+) {
+	{
 		clearProgressMsg(senderID)
 
 		mu.Lock()
-		msgID := progressMsgID
+		msgID := *progressMsgIDPtr
 		result := strings.TrimSpace(finalBuf.String())
-		alreadySent := sentDirect
+		alreadySent := *sentDirectPtr
 		mu.Unlock()
 
 		const maxLen = 3800
 		editOpts := &telegram.SendOptions{ParseMode: telegram.HTML}
 
-		if alreadySent {
+		if result == "" {
 			if msgID != 0 {
-				b.client.EditMessage(chatID, msgID, "<i>done</i>", editOpts)
+				if alreadySent {
+					_, _ = b.client.DeleteMessages(chatID, []int32{int32(msgID)})
+				} else {
+					b.client.EditMessage(chatID, msgID, "<i>(empty reply)</i>", editOpts)
+				}
 			}
 			return
 		}
 
-		if result == "" {
-			if msgID != 0 {
-				b.client.EditMessage(chatID, msgID, "<i>done</i>", editOpts)
+		if alreadySent {
+			normalizedResult := strings.TrimSpace(stripMarkdown(result))
+			if normalizedResult == "" || reTrailingAck.MatchString(normalizedResult) {
+				if msgID != 0 {
+					_, _ = b.client.DeleteMessages(chatID, []int32{int32(msgID)})
+				}
+				return
 			}
-			return
 		}
 
 		result = stripMarkdown(result)
@@ -1281,12 +1406,9 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 		for len(result) > 0 {
 			chunk := result
 			if len(chunk) > maxLen {
-				cut := strings.LastIndex(result[:maxLen], "\n")
-				if cut < 100 {
-					cut = maxLen
-				}
-				chunk = result[:cut]
-				result = strings.TrimSpace(result[cut:])
+				head, tail := splitAtSafeBoundary(result, maxLen)
+				chunk = head
+				result = strings.TrimSpace(tail)
 			} else {
 				result = ""
 			}
@@ -1301,8 +1423,6 @@ func (b *TelegramBot) newStreamHandler(chatID int64, replyToMsgID int64, senderI
 			first = false
 		}
 	}
-
-	return onChunk, flush, done
 }
 
 func transcribeAudio(filePath string) (string, error) {

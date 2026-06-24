@@ -64,14 +64,18 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 	var calls []ToolCall
 	var consumed []string
 
-	// 1) Explicit tool_calls fences.
+	// 1) Explicit tool_calls fences. Only consume the fence if parsing
+	// actually produced calls; otherwise leave the prose for downstream
+	// rendering so users see something instead of a silent blank.
 	if matches := reToolCallsFence.FindAllStringSubmatchIndex(work, -1); len(matches) > 0 {
 		for _, m := range matches {
 			body := work[m[2]:m[3]]
-			consumed = append(consumed, work[m[0]:m[1]])
-			if batch, err := parseJSONCalls(body); err == nil {
-				calls = append(calls, batch...)
+			batch, err := parseJSONCalls(body)
+			if err != nil || len(batch) == 0 {
+				continue
 			}
+			calls = append(calls, batch...)
+			consumed = append(consumed, work[m[0]:m[1]])
 		}
 	}
 
