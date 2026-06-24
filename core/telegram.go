@@ -262,14 +262,6 @@ func NewTelegramBot() (*TelegramBot, error) {
 	client, err := telegram.NewClient(telegram.ClientConfig{
 		AppID:   int32(Cfg.TelegramAPIID),
 		AppHash: Cfg.TelegramAPIHash,
-		Proxy: &telegram.Socks5Proxy{
-			BaseProxy: telegram.BaseProxy{
-				Host: "103.214.23.203",
-				Port: 1080,
-			},
-			Username: "tgproxy",
-			Password: "0000",
-		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gogram init: %w", err)
@@ -973,14 +965,14 @@ var (
 	reCitationMarker = regexp.MustCompile(`【[^】]*】`)
 	reEmoji          = regexp.MustCompile(`[\x{1F000}-\x{1FFFF}\x{2600}-\x{27BF}\x{2300}-\x{23FF}\x{2700}-\x{27BF}\x{1F300}-\x{1F9FF}\x{1FA00}-\x{1FAFF}\x{2B00}-\x{2BFF}\x{25A0}-\x{25FF}\x{2190}-\x{21FF}\x{FE0F}]`)
 	reMdTable        = regexp.MustCompile(`(?m)(?:^\s*\|.*\|\s*$\r?\n?)+`)
-	reMdBoldStar    = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`)
-	reMdBoldUnder   = regexp.MustCompile(`(?s)__(.*?)__`)
-	reMdItalicStar  = regexp.MustCompile(`(?s)\*(.*?)\*`)
-	reMdCodeBlock   = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n?(.*?)```")
-	reMdInlineCode  = regexp.MustCompile("(?s)`([^`]+)`")
-	reMdHeading     = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
-	reMdLink        = regexp.MustCompile(`(?:\[([^\]]+)\])\(([^)]+)\)`)
-	reExtraNewlines = regexp.MustCompile(`\n{3,}`)
+	reMdBoldStar     = regexp.MustCompile(`(?s)\*\*(.*?)\*\*`)
+	reMdBoldUnder    = regexp.MustCompile(`(?s)__(.*?)__`)
+	reMdItalicStar   = regexp.MustCompile(`(?s)\*(.*?)\*`)
+	reMdCodeBlock    = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n?(.*?)```")
+	reMdInlineCode   = regexp.MustCompile("(?s)`([^`]+)`")
+	reMdHeading      = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
+	reMdLink         = regexp.MustCompile(`(?:\[([^\]]+)\])\(([^)]+)\)`)
+	reExtraNewlines  = regexp.MustCompile(`\n{3,}`)
 )
 
 func stripMarkdown(s string) string {
